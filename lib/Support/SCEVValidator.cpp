@@ -120,9 +120,9 @@ raw_ostream &operator<<(raw_ostream &OS, class ValidatorResult &VR) {
 }
 
 /// Check if a SCEV is valid in a SCoP.
-struct SCEVValidator
-    : public SCEVVisitor<SCEVValidator, class ValidatorResult> {
-private:
+struct SCEVValidator :
+    public SCEVVisitor<SCEVValidator, class ValidatorResult> {
+protected:
   const Region *R;
   ScalarEvolution &SE;
   const Value *BaseAddress;
@@ -131,11 +131,11 @@ public:
   SCEVValidator(const Region *R, ScalarEvolution &SE, const Value *BaseAddress)
       : R(R), SE(SE), BaseAddress(BaseAddress) {}
 
-  class ValidatorResult visitConstant(const SCEVConstant *Constant) {
+  virtual class ValidatorResult visitConstant(const SCEVConstant *Constant) {
     return ValidatorResult(SCEVType::INT);
   }
 
-  class ValidatorResult visitTruncateExpr(const SCEVTruncateExpr *Expr) {
+  virtual class ValidatorResult visitTruncateExpr(const SCEVTruncateExpr *Expr) {
     ValidatorResult Op = visit(Expr->getOperand());
 
     switch (Op.getType()) {
@@ -146,7 +146,7 @@ public:
       // parameter.
       return ValidatorResult(SCEVType::PARAM, Expr);
     case SCEVType::IV:
-      DEBUG(dbgs() << "INVALID: Truncation of SCEVType::IV expression");
+      DEBUG(dbgs() << "INVALID: Truncation of SCEVType::IV expression\n");
       return ValidatorResult(SCEVType::INVALID);
     case SCEVType::INVALID:
       return Op;
@@ -155,7 +155,7 @@ public:
     llvm_unreachable("Unknown SCEVType");
   }
 
-  class ValidatorResult visitZeroExtendExpr(const SCEVZeroExtendExpr *Expr) {
+  virtual class ValidatorResult visitZeroExtendExpr(const SCEVZeroExtendExpr *Expr) {
     ValidatorResult Op = visit(Expr->getOperand());
 
     switch (Op.getType()) {
@@ -166,7 +166,7 @@ public:
       // parameter.
       return ValidatorResult(SCEVType::PARAM, Expr);
     case SCEVType::IV:
-      DEBUG(dbgs() << "INVALID: ZeroExtend of SCEVType::IV expression");
+      DEBUG(dbgs() << "INVALID: ZeroExtend of SCEVType::IV expression\n");
       return ValidatorResult(SCEVType::INVALID);
     case SCEVType::INVALID:
       return Op;
@@ -175,7 +175,7 @@ public:
     llvm_unreachable("Unknown SCEVType");
   }
 
-  class ValidatorResult visitSignExtendExpr(const SCEVSignExtendExpr *Expr) {
+  virtual class ValidatorResult visitSignExtendExpr(const SCEVSignExtendExpr *Expr) {
     // We currently allow only signed SCEV expressions. In the case of a
     // signed value, a sign extend is a noop.
     //
@@ -183,7 +183,7 @@ public:
     return visit(Expr->getOperand());
   }
 
-  class ValidatorResult visitAddExpr(const SCEVAddExpr *Expr) {
+  virtual class ValidatorResult visitAddExpr(const SCEVAddExpr *Expr) {
     ValidatorResult Return(SCEVType::INT);
 
     for (int i = 0, e = Expr->getNumOperands(); i < e; ++i) {
@@ -199,7 +199,7 @@ public:
     return Return;
   }
 
-  class ValidatorResult visitMulExpr(const SCEVMulExpr *Expr) {
+  virtual class ValidatorResult visitMulExpr(const SCEVMulExpr *Expr) {
     ValidatorResult Return(SCEVType::INT);
 
     bool HasMultipleParams = false;
@@ -235,7 +235,7 @@ public:
     return Return;
   }
 
-  class ValidatorResult visitUDivExpr(const SCEVUDivExpr *Expr) {
+  virtual class ValidatorResult visitUDivExpr(const SCEVUDivExpr *Expr) {
     ValidatorResult LHS = visit(Expr->getLHS());
     ValidatorResult RHS = visit(Expr->getRHS());
 
@@ -245,13 +245,13 @@ public:
     if (LHS.isConstant() && RHS.isConstant())
       return ValidatorResult(SCEVType::PARAM, Expr);
 
-    DEBUG(dbgs() << "INVALID: unsigned division of non-constant expressions");
+    DEBUG(dbgs() << "INVALID: unsigned division of non-constant expressions\n");
     return ValidatorResult(SCEVType::INVALID);
   }
 
-  class ValidatorResult visitAddRecExpr(const SCEVAddRecExpr *Expr) {
+  virtual class ValidatorResult visitAddRecExpr(const SCEVAddRecExpr *Expr) {
     if (!Expr->isAffine()) {
-      DEBUG(dbgs() << "INVALID: AddRec is not affine");
+      DEBUG(dbgs() << "INVALID: AddRec is not affine\n");
       return ValidatorResult(SCEVType::INVALID);
     }
 
@@ -272,7 +272,7 @@ public:
       }
 
       DEBUG(dbgs() << "INVALID: AddRec within scop has non-int"
-                      "recurrence part");
+                      " recurrence part\n");
       return ValidatorResult(SCEVType::INVALID);
     }
 
@@ -296,8 +296,8 @@ public:
     return ZeroStartResult;
   }
 
-  class ValidatorResult visitSMaxExpr(const SCEVSMaxExpr *Expr) {
-    ValidatorResult Return(SCEVType::INT);
+  virtual class ValidatorResult visitSMaxExpr(const SCEVSMaxExpr *Expr) {
+    ValidatorResult Return(SCEVType::INT, Expr);
 
     for (int i = 0, e = Expr->getNumOperands(); i < e; ++i) {
       ValidatorResult Op = visit(Expr->getOperand(i));
@@ -311,14 +311,14 @@ public:
     return Return;
   }
 
-  class ValidatorResult visitUMaxExpr(const SCEVUMaxExpr *Expr) {
+  virtual class ValidatorResult visitUMaxExpr(const SCEVUMaxExpr *Expr) {
     // We do not support unsigned operations. If 'Expr' is constant during Scop
     // execution we treat this as a parameter, otherwise we bail out.
     for (int i = 0, e = Expr->getNumOperands(); i < e; ++i) {
       ValidatorResult Op = visit(Expr->getOperand(i));
 
       if (!Op.isConstant()) {
-        DEBUG(dbgs() << "INVALID: UMaxExpr has a non-constant operand");
+        DEBUG(dbgs() << "INVALID: UMaxExpr has a non-constant operand\n");
         return ValidatorResult(SCEVType::INVALID);
       }
     }
@@ -326,7 +326,7 @@ public:
     return ValidatorResult(SCEVType::PARAM, Expr);
   }
 
-  ValidatorResult visitUnknown(const SCEVUnknown *Expr) {
+  virtual class ValidatorResult visitUnknown(const SCEVUnknown *Expr) {
     Value *V = Expr->getValue();
 
     // We currently only support integer types. It may be useful to support
@@ -337,12 +337,12 @@ public:
     //
     // See test/CodeGen/20120316-InvalidCast.ll
     if (!Expr->getType()->isIntegerTy()) {
-      DEBUG(dbgs() << "INVALID: UnknownExpr is not an integer type");
+      DEBUG(dbgs() << "INVALID: UnknownExpr is not an integer type\n");
       return ValidatorResult(SCEVType::INVALID);
     }
 
     if (isa<UndefValue>(V)) {
-      DEBUG(dbgs() << "INVALID: UnknownExpr references an undef value");
+      DEBUG(dbgs() << "INVALID: UnknownExpr references an undef value\n");
       return ValidatorResult(SCEVType::INVALID);
     }
 
@@ -460,6 +460,119 @@ private:
   const Region *R;
 };
 
+struct NonAffSCEVValidator : public SCEVValidator {
+public:
+  NonAffSCEVValidator(const Region *R, ScalarEvolution &SE,
+                      const Value *BaseAddress)
+      : SCEVValidator(R, SE, BaseAddress) {};
+
+  virtual class ValidatorResult
+  visitTruncateExpr(const SCEVTruncateExpr *Expr) {
+    return visit(Expr->getOperand());
+  }
+
+  virtual class ValidatorResult
+  visitZeroExtendExpr(const SCEVZeroExtendExpr *Expr) {
+    return visit(Expr->getOperand());
+  }
+
+  virtual class ValidatorResult
+  visitSignExtendExpr(const SCEVSignExtendExpr *Expr) {
+    return visit(Expr->getOperand());
+  }
+
+  virtual class ValidatorResult visitAddRecExpr(const SCEVAddRecExpr *Expr) {
+    if (!Expr->isAffine()) {
+      DEBUG(dbgs() << "INVALID: AddRec is not affine\n");
+      return ValidatorResult(SCEVType::INVALID);
+    }
+
+    ValidatorResult Start = visit(Expr->getStart());
+    ValidatorResult Recurrence = visit(Expr->getStepRecurrence(SE));
+
+    if (!Start.isValid())
+      return Start;
+
+    if (!Recurrence.isValid())
+      return Recurrence;
+
+    if (R->contains(Expr->getLoop())) {
+      if (Recurrence.isINT()) {
+        ValidatorResult Result(SCEVType::IV);
+        Result.addParamsFrom(Start);
+        return Result;
+      }
+
+      // That will be polynomial, no no
+      const SCEV *StepRecurr = Expr->getStepRecurrence(SE);
+      if (isa<SCEVAddRecExpr>(StepRecurr))
+        return ValidatorResult(SCEVType::INVALID);
+
+      if (Recurrence.isPARAM()) {
+        ValidatorResult Result(SCEVType::PARAM, StepRecurr);
+        Result.addParamsFrom(Start);
+        DEBUG(dbgs() << "VALID: AddRec within scop has parametrized"
+                     << " recurrence part\n");
+        return Result;
+      }
+
+      DEBUG(dbgs() << "INVALID: AddRec within scop has non-int"
+                      " recurrence part\n");
+      return ValidatorResult(SCEVType::INVALID);
+    }
+
+    assert(Start.isConstant() && Recurrence.isConstant() &&
+           "Expected 'Start' and 'Recurrence' to be constant");
+    return ValidatorResult(SCEVType::PARAM, Expr);
+  }
+
+  virtual class ValidatorResult visitUnknown(const SCEVUnknown *Expr) {
+    Value *V = Expr->getValue();
+
+    // We currently only support integer types. It may be useful to support
+    // pointer types, e.g. to support code like:
+    //
+    //   if (A)
+    //     A[i] = 1;
+    //
+    // See test/CodeGen/20120316-InvalidCast.ll
+    if (!Expr->getType()->isIntegerTy()) {
+      DEBUG(dbgs() << "INVALID: UnknownExpr is not an integer type\n");
+      return ValidatorResult(SCEVType::INVALID);
+    }
+
+    if (isa<UndefValue>(V)) {
+      DEBUG(dbgs() << "INVALID: UnknownExpr references an undef value\n");
+      return ValidatorResult(SCEVType::INVALID);
+    }
+
+    Type *AllocTy;
+    Constant *FieldNo;
+    // We treat these as constant for now
+    if (Expr->isSizeOf(AllocTy) || Expr->isAlignOf(AllocTy) ||
+        Expr->isOffsetOf(AllocTy, FieldNo))
+      return ValidatorResult(SCEVType::INT, Expr);
+
+    // Function arguments are constant
+    if (dyn_cast<Argument>(V))
+      return ValidatorResult(SCEVType::PARAM, Expr);
+
+    if (Instruction *I = dyn_cast<Instruction>(Expr->getValue()))
+      if (R->contains(I)) {
+        DEBUG(dbgs() << "INVALID: UnknownExpr references an instruction "
+                        "within the region\n");
+        return ValidatorResult(SCEVType::INVALID);
+      }
+
+    if (BaseAddress == V) {
+      DEBUG(dbgs() << "INVALID: UnknownExpr references BaseAddress\n");
+      return ValidatorResult(SCEVType::INVALID);
+    }
+
+    return ValidatorResult(SCEVType::PARAM, Expr);
+  }
+};
+
 namespace polly {
 bool hasScalarDepsInsideRegion(const SCEV *Expr, const Region *R) {
   return SCEVInRegionDependences::hasDependences(Expr, R);
@@ -489,6 +602,35 @@ std::vector<const SCEV *> getParamsInAffineExpr(const Region *R,
     return std::vector<const SCEV *>();
 
   SCEVValidator Validator(R, SE, BaseAddress);
+  ValidatorResult Result = Validator.visit(Expr);
+
+  return Result.getParameters();
+}
+
+bool isNonAffineExpr(const Region *R, const SCEV *Expr, ScalarEvolution &SE,
+                     const Value *BaseAddress) {
+  if (isa<SCEVCouldNotCompute>(Expr))
+    return false;
+
+  NonAffSCEVValidator Validator(R, SE, BaseAddress);
+  DEBUG(dbgs() << "\n"; dbgs() << "Expr: " << *Expr << "\n";
+        dbgs() << "Region: " << R->getNameStr() << "\n";);
+
+  ValidatorResult Result = Validator.visit(Expr);
+
+  DEBUG(if (Result.isValid()) dbgs() << "VALID\n"; dbgs() << "\n";);
+
+  return Result.isValid();
+}
+
+std::vector<const SCEV *> getParamsInNonAffineExpr(const Region *R,
+                                                   const SCEV *Expr,
+                                                   ScalarEvolution &SE,
+                                                   const Value *BaseAddress) {
+  if (isa<SCEVCouldNotCompute>(Expr))
+    return std::vector<const SCEV *>();
+
+  NonAffSCEVValidator Validator(R, SE, BaseAddress);
   ValidatorResult Result = Validator.visit(Expr);
 
   return Result.getParameters();
