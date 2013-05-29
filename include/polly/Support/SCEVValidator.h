@@ -51,6 +51,15 @@ std::vector<const llvm::SCEV *>
 getParamsInAffineExpr(const llvm::Region *R, const llvm::SCEV *Expression,
                       llvm::ScalarEvolution &SE,
                       const llvm::Value *BaseAddress = 0);
+
+bool isNonAffineExpr(const llvm::Region *R, const llvm::SCEV *Expr,
+                     llvm::ScalarEvolution &SE,
+                     const llvm::Value *BaseAddress = 0);
+
+std::vector<const llvm::SCEV *>
+getParamsInNonAffineExpr(const llvm::Region *R, const llvm::SCEV *Expression,
+                         llvm::ScalarEvolution &SE,
+                         const llvm::Value *BaseAddress = 0);
 }
 
 #endif
