@@ -59,6 +59,25 @@ public:
   virtual std::string getMessage() const = 0;
 };
 
+typedef std::shared_ptr<RejectReason> RejectReasonPtr;
+
+/// @brief Stores all errors that ocurred during the detection.
+class RejectLog {
+  Region *R;
+  llvm::SmallVector<RejectReasonPtr, 1> ErrorReports;
+
+public:
+  explicit RejectLog(Region *R) : R(R) {};
+
+  typedef llvm::SmallVector<RejectReasonPtr, 1>::iterator iterator;
+
+  iterator begin() { return ErrorReports.begin(); }
+  iterator end() { return ErrorReports.end(); }
+
+  const Region *region() const { return R; }
+  void report(RejectReasonPtr Reject) { ErrorReports.push_back(Reject); }
+};
+
 //===----------------------------------------------------------------------===//
 /// @brief Base class for CFG related reject reasons.
 ///
@@ -181,6 +200,9 @@ public:
   ReportNonAffBranch(BasicBlock *BB, const SCEV *LHS, const SCEV *RHS)
       : BB(BB), LHS(LHS), RHS(RHS) {};
 
+  const SCEV *lhs() { return LHS; }
+  const SCEV *rhs() { return RHS; }
+
   /// @name RejectReason interface
   //@{
   virtual std::string getMessage() const;
@@ -237,6 +259,8 @@ class ReportNonAffineAccess : public ReportAffFunc {
 public:
   ReportNonAffineAccess(const SCEV *AccessFunction)
       : AccessFunction(AccessFunction) {};
+
+  const SCEV *get() { return AccessFunction; }
 
   /// @name RejectReason interface
   //@{
@@ -332,6 +356,8 @@ class ReportLoopBound : public RejectReason {
 
 public:
   ReportLoopBound(Loop *L, const SCEV *LoopCount);
+
+  const SCEV *loopCount() { return LoopCount; }
 
   /// @name RejectReason interface
   //@{
