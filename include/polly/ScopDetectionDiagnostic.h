@@ -5,6 +5,8 @@
 // This file is distributed under the University of Illinois Open Source
 // License. See LICENSE.TXT for details.
 //
+//===----------------------------------------------------------------------===//
+//
 // Small set of diagnostic helper classes to encapsulate any errors occurred
 // during the detection of Scops.
 //
@@ -13,6 +15,7 @@
 // related errors.
 // On error we generate an object that carries enough additional information
 // to diagnose the error and generate a helpful error message.
+//
 //===----------------------------------------------------------------------===//
 #ifndef POLLY_SCOP_DETECTION_DIAGNOSTIC_H
 #define POLLY_SCOP_DETECTION_DIAGNOSTIC_H
@@ -21,39 +24,24 @@
 #include "llvm/Analysis/AliasSetTracker.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Value.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/Twine.h"
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
+#include "llvm/Analysis/ScalarEvolutionExpressions.h"
+
 #include <string>
+#include <memory>
 
-#define DEBUG_TYPE "polly-detect"
+using namespace llvm;
 
-#define BADSCOP_STAT(NAME, DESC)                                               \
-  STATISTIC(Bad##NAME##ForScop, "Number of bad regions for Scop: " DESC)
-
-BADSCOP_STAT(CFG, "CFG too complex");
-BADSCOP_STAT(IndVar, "Non canonical induction variable in loop");
-BADSCOP_STAT(IndEdge, "Found invalid region entering edges");
-BADSCOP_STAT(LoopBound, "Loop bounds can not be computed");
-BADSCOP_STAT(FuncCall, "Function call with side effects appeared");
-BADSCOP_STAT(AffFunc, "Expression not affine");
-BADSCOP_STAT(Alias, "Found base address alias");
-BADSCOP_STAT(SimpleLoop, "Loop not in -loop-simplify form");
-BADSCOP_STAT(Other, "Others");
-
-namespace polly {
-
-/// @brief Small string conversion via raw_string_stream.
-template <typename T> std::string operator+(Twine LHS, const T &RHS) {
-  std::string Buf;
-  raw_string_ostream fmt(Buf);
-  fmt << RHS;
-  fmt.flush();
-
-  return LHS.concat(Buf).str();
+namespace llvm {
+class SCEV;
+class BasicBlock;
+class Value;
+class Region;
 }
 
+namespace polly {
 //===----------------------------------------------------------------------===//
 /// @brief Base class of all reject reasons found during Scop detection.
 ///
@@ -63,7 +51,7 @@ template <typename T> std::string operator+(Twine LHS, const T &RHS) {
 class RejectReason {
   //===--------------------------------------------------------------------===//
 public:
-  virtual ~RejectReason() {}
+  virtual ~RejectReason() {};
 
   /// @brief Generate a reasonable diagnostic message describing this error.
   ///
@@ -79,20 +67,18 @@ public:
 class ReportCFG : public RejectReason {
   //===--------------------------------------------------------------------===//
 public:
-  ReportCFG() { ++BadCFGForScop; }
+  ReportCFG();
 };
 
 class ReportNonBranchTerminator : public ReportCFG {
   BasicBlock *BB;
 
 public:
-  ReportNonBranchTerminator(BasicBlock *BB) : BB(BB) {}
+  ReportNonBranchTerminator(BasicBlock *BB) : BB(BB) {};
 
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const {
-    return ("Non branch instruction terminates BB: " + BB->getName()).str();
-  }
+  virtual std::string getMessage() const;
   //@}
 };
 
@@ -105,13 +91,11 @@ class ReportCondition : public ReportCFG {
   BasicBlock *BB;
 
 public:
-  ReportCondition(BasicBlock *BB) : BB(BB) {}
+  ReportCondition(BasicBlock *BB) : BB(BB) {};
 
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const {
-    return ("Not well structured condition at BB: " + BB->getName()).str();
-  }
+  virtual std::string getMessage() const;
   //@}
 };
 
@@ -123,7 +107,7 @@ public:
 class ReportAffFunc : public RejectReason {
   //===--------------------------------------------------------------------===//
 public:
-  ReportAffFunc() { ++BadAffFuncForScop; }
+  ReportAffFunc();
 };
 
 //===----------------------------------------------------------------------===//
@@ -135,13 +119,11 @@ class ReportUndefCond : public ReportAffFunc {
   BasicBlock *BB;
 
 public:
-  ReportUndefCond(BasicBlock *BB) : BB(BB) {}
+  ReportUndefCond(BasicBlock *BB) : BB(BB) {};
 
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const {
-    return ("Condition based on 'undef' value in BB: " + BB->getName()).str();
-  }
+  virtual std::string getMessage() const;
   //@}
 };
 
@@ -156,14 +138,11 @@ class ReportInvalidCond : public ReportAffFunc {
   BasicBlock *BB;
 
 public:
-  ReportInvalidCond(BasicBlock *BB) : BB(BB) {}
+  ReportInvalidCond(BasicBlock *BB) : BB(BB) {};
 
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const {
-    return ("Condition in BB '" + BB->getName()).str() +
-           "' neither constant nor an icmp instruction";
-  }
+  virtual std::string getMessage() const;
   //@}
 };
 
@@ -176,13 +155,11 @@ class ReportUndefOperand : public ReportAffFunc {
   BasicBlock *BB;
 
 public:
-  ReportUndefOperand(BasicBlock *BB) : BB(BB) {}
+  ReportUndefOperand(BasicBlock *BB) : BB(BB) {};
 
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const {
-    return ("undef operand in branch at BB: " + BB->getName()).str();
-  }
+  virtual std::string getMessage() const;
   //@}
 };
 
@@ -202,14 +179,11 @@ class ReportNonAffBranch : public ReportAffFunc {
 
 public:
   ReportNonAffBranch(BasicBlock *BB, const SCEV *LHS, const SCEV *RHS)
-      : BB(BB), LHS(LHS), RHS(RHS) {}
+      : BB(BB), LHS(LHS), RHS(RHS) {};
 
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const {
-    return ("Non affine branch in BB '" + BB->getName()).str() +
-           "' with LHS: " + *LHS + " and RHS: " + *RHS;
-  }
+  virtual std::string getMessage() const;
   //@}
 };
 
@@ -220,7 +194,7 @@ class ReportNoBasePtr : public ReportAffFunc {
 public:
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const { return "No base pointer"; }
+  virtual std::string getMessage() const;
   //@}
 };
 
@@ -231,7 +205,7 @@ class ReportUndefBasePtr : public ReportAffFunc {
 public:
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const { return "Undefined base pointer"; }
+  virtual std::string getMessage() const;
   //@}
 };
 
@@ -244,13 +218,11 @@ class ReportVariantBasePtr : public ReportAffFunc {
   Value *BaseValue;
 
 public:
-  ReportVariantBasePtr(Value *BaseValue) : BaseValue(BaseValue) {}
+  ReportVariantBasePtr(Value *BaseValue) : BaseValue(BaseValue) {};
 
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const {
-    return "Base address not invariant in current region:" + *BaseValue;
-  }
+  virtual std::string getMessage() const;
   //@}
 };
 
@@ -264,13 +236,11 @@ class ReportNonAffineAccess : public ReportAffFunc {
 
 public:
   ReportNonAffineAccess(const SCEV *AccessFunction)
-      : AccessFunction(AccessFunction) {}
+      : AccessFunction(AccessFunction) {};
 
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const {
-    return "Non affine access function: " + *AccessFunction;
-  }
+  virtual std::string getMessage() const;
   //@}
 };
 
@@ -282,7 +252,7 @@ public:
 class ReportIndVar : public RejectReason {
   //===--------------------------------------------------------------------===//
 public:
-  ReportIndVar() { ++BadIndVarForScop; }
+  ReportIndVar();
 };
 
 //===----------------------------------------------------------------------===//
@@ -294,13 +264,11 @@ class ReportPhiNodeRefInRegion : public ReportIndVar {
   Instruction *Inst;
 
 public:
-  ReportPhiNodeRefInRegion(Instruction *Inst) : Inst(Inst) {}
+  ReportPhiNodeRefInRegion(Instruction *Inst) : Inst(Inst) {};
 
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const {
-    return "SCEV of PHI node refers to SSA names in region: " + *Inst;
-  }
+  virtual std::string getMessage() const;
   //@}
 };
 
@@ -313,13 +281,11 @@ class ReportNonCanonicalPhiNode : public ReportIndVar {
   Instruction *Inst;
 
 public:
-  ReportNonCanonicalPhiNode(Instruction *Inst) : Inst(Inst) {}
+  ReportNonCanonicalPhiNode(Instruction *Inst) : Inst(Inst) {};
 
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const {
-    return "Non canonical PHI node: " + *Inst;
-  }
+  virtual std::string getMessage() const;
   //@}
 };
 
@@ -332,14 +298,11 @@ class ReportLoopHeader : public ReportIndVar {
   Loop *L;
 
 public:
-  ReportLoopHeader(Loop *L) : L(L) {}
+  ReportLoopHeader(Loop *L) : L(L) {};
 
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const {
-    return ("No canonical IV at loop header: " + L->getHeader()->getName())
-        .str();
-  }
+  virtual std::string getMessage() const;
   //@}
 };
 
@@ -348,13 +311,12 @@ public:
 class ReportIndEdge : public RejectReason {
   //===--------------------------------------------------------------------===//
 public:
-  ReportIndEdge() { ++BadIndEdgeForScop; }
+  ReportIndEdge();
 
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const {
-    return "Region has invalid entering edges!";
-  }
+  virtual std::string getMessage() const;
+  //@}
 };
 
 //===----------------------------------------------------------------------===//
@@ -369,16 +331,11 @@ class ReportLoopBound : public RejectReason {
   const SCEV *LoopCount;
 
 public:
-  ReportLoopBound(Loop *L, const SCEV *LoopCount) : L(L), LoopCount(LoopCount) {
-    ++BadLoopBoundForScop;
-  }
+  ReportLoopBound(Loop *L, const SCEV *LoopCount);
 
   /// @name RejectReason interface
   //@{
-  virtual std::string getMessage() const {
-    return "Non affine loop bound '" + *LoopCount + "' in loop: " +
-           L->getHeader()->getName();
-  }
+  virtual std::string getMessage() const;
   //@}
 };
 
@@ -391,11 +348,11 @@ class ReportFuncCall : public RejectReason {
   Instruction *Inst;
 
 public:
-  ReportFuncCall(Instruction *Inst) : Inst(Inst) { ++BadFuncCallForScop; }
+  ReportFuncCall(Instruction *Inst);
 
   /// @name RejectReason interface
   //@{
-  std::string getMessage() const { return "Call instruction: " + *Inst; }
+  std::string getMessage() const;
   //@}
 };
 
@@ -410,46 +367,14 @@ class ReportAlias : public RejectReason {
   /// @brief Format an invalid alias set.
   ///
   /// @param AS The invalid alias set to format.
-  std::string formatInvalidAlias(AliasSet &AS) const {
-    std::string Message;
-    raw_string_ostream OS(Message);
-
-    OS << "Possible aliasing: ";
-
-    std::vector<Value *> Pointers;
-
-    for (const auto &I : AS)
-      Pointers.push_back(I.getValue());
-
-    std::sort(Pointers.begin(), Pointers.end());
-
-    for (std::vector<Value *>::iterator PI = Pointers.begin(),
-                                        PE = Pointers.end();
-         ;) {
-      Value *V = *PI;
-
-      if (V->getName().size() == 0)
-        OS << "\"" << *V << "\"";
-      else
-        OS << "\"" << V->getName() << "\"";
-
-      ++PI;
-
-      if (PI != PE)
-        OS << ", ";
-      else
-        break;
-    }
-
-    return OS.str();
-  }
+  std::string formatInvalidAlias(AliasSet &AS) const;
 
 public:
-  ReportAlias(AliasSet *AS) : AS(AS) { ++BadAliasForScop; }
+  ReportAlias(AliasSet *AS);
 
   /// @name RejectReason interface
   //@{
-  std::string getMessage() const { return formatInvalidAlias(*AS); }
+  std::string getMessage() const;
   //@}
 };
 
@@ -458,13 +383,11 @@ public:
 class ReportSimpleLoop : public RejectReason {
   //===--------------------------------------------------------------------===//
 public:
-  ReportSimpleLoop() { ++BadSimpleLoopForScop; }
+  ReportSimpleLoop();
 
   /// @name RejectReason interface
   //@{
-  std::string getMessage() const {
-    return "Loop not in simplify form is invalid!";
-  }
+  std::string getMessage() const;
   //@}
 };
 
@@ -473,7 +396,7 @@ public:
 class ReportOther : public RejectReason {
   //===--------------------------------------------------------------------===//
 public:
-  ReportOther() { ++BadOtherForScop; }
+  ReportOther();
 
   /// @name RejectReason interface
   //@{
@@ -490,13 +413,11 @@ class ReportIntToPtr : public ReportOther {
   Value *BaseValue;
 
 public:
-  ReportIntToPtr(Value *BaseValue) : BaseValue(BaseValue) {}
+  ReportIntToPtr(Value *BaseValue) : BaseValue(BaseValue) {};
 
   /// @name RejectReason interface
   //@{
-  std::string getMessage() const {
-    return "Find bad intToptr prt: " + *BaseValue;
-  }
+  std::string getMessage() const;
   //@}
 };
 
@@ -507,11 +428,11 @@ class ReportAlloca : public ReportOther {
   Instruction *Inst;
 
 public:
-  ReportAlloca(Instruction *Inst) : Inst(Inst) {}
+  ReportAlloca(Instruction *Inst) : Inst(Inst) {};
 
   /// @name RejectReason interface
   //@{
-  std::string getMessage() const { return "Alloca instruction: " + *Inst; }
+  std::string getMessage() const;
   //@}
 };
 
@@ -522,11 +443,11 @@ class ReportUnknownInst : public ReportOther {
   Instruction *Inst;
 
 public:
-  ReportUnknownInst(Instruction *Inst) : Inst(Inst) {}
+  ReportUnknownInst(Instruction *Inst) : Inst(Inst) {};
 
   /// @name RejectReason interface
   //@{
-  std::string getMessage() const { return "Unknown instruction: " + *Inst; }
+  std::string getMessage() const;
   //@}
 };
 
@@ -537,7 +458,7 @@ class ReportPHIinExit : public ReportOther {
 public:
   /// @name RejectReason interface
   //@{
-  std::string getMessage() const { return "PHI node in exit BB"; }
+  std::string getMessage() const;
   //@}
 };
 
@@ -548,9 +469,7 @@ class ReportEntry : public ReportOther {
 public:
   /// @name RejectReason interface
   //@{
-  std::string getMessage() const {
-    return "Region containing entry block of function is invalid!";
-  }
+  std::string getMessage() const;
   //@}
 };
 
