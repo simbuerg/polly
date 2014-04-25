@@ -58,7 +58,9 @@ template <typename T> std::string operator+(Twine LHS, const T &RHS) {
 //===----------------------------------------------------------------------===//
 // ReportCFG.
 
-ReportCFG::ReportCFG() { ++BadCFGForScop; }
+ReportCFG::ReportCFG(const RejectReasonKind K) : RejectReason(K) {
+  ++BadCFGForScop;
+}
 
 std::string ReportNonBranchTerminator::getMessage() const {
   return ("Non branch instruction terminates BB: " + BB->getName()).str();
@@ -68,7 +70,9 @@ std::string ReportCondition::getMessage() const {
   return ("Not well structured condition at BB: " + BB->getName()).str();
 }
 
-ReportAffFunc::ReportAffFunc() { ++BadAffFuncForScop; }
+ReportAffFunc::ReportAffFunc(const RejectReasonKind K) : RejectReason(K) {
+  ++BadAffFuncForScop;
+}
 
 std::string ReportUndefCond::getMessage() const {
   return ("Condition based on 'undef' value in BB: " + BB->getName()).str();
@@ -87,7 +91,7 @@ std::string ReportNonAffBranch::getMessage() const {
   return ("Non affine branch in BB '" + BB->getName()).str() + "' with LHS: " +
          *LHS + " and RHS: " + *RHS;
 }
-  
+
 std::string ReportNoBasePtr::getMessage() const { return "No base pointer"; }
 
 std::string ReportUndefBasePtr::getMessage() const {
@@ -102,7 +106,9 @@ std::string ReportNonAffineAccess::getMessage() const {
   return "Non affine access function: " + *AccessFunction;
 }
 
-ReportIndVar::ReportIndVar() { ++BadIndVarForScop; }
+ReportIndVar::ReportIndVar(const RejectReasonKind K) : RejectReason(K) {
+  ++BadIndVarForScop;
+}
 
 std::string ReportPhiNodeRefInRegion::getMessage() const {
   return "SCEV of PHI node refers to SSA names in region: " + *Inst;
@@ -116,14 +122,16 @@ std::string ReportLoopHeader::getMessage() const {
   return ("No canonical IV at loop header: " + L->getHeader()->getName()).str();
 }
 
-ReportIndEdge::ReportIndEdge() { ++BadIndEdgeForScop; }
+ReportIndEdge::ReportIndEdge() : RejectReason(rrkIndEdge) {
+  ++BadIndEdgeForScop;
+}
 
 std::string ReportIndEdge::getMessage() const {
   return "Region has invalid entering edges!";
 }
 
 ReportLoopBound::ReportLoopBound(Loop *L, const SCEV *LoopCount)
-    : L(L), LoopCount(LoopCount) {
+    : RejectReason(rrkLoopBound), L(L), LoopCount(LoopCount) {
   ++BadLoopBoundForScop;
 }
 
@@ -132,7 +140,8 @@ std::string ReportLoopBound::getMessage() const {
          L->getHeader()->getName();
 }
 
-ReportFuncCall::ReportFuncCall(Instruction *Inst) : Inst(Inst) {
+ReportFuncCall::ReportFuncCall(Instruction *Inst)
+    : RejectReason(rrkFuncCall), Inst(Inst) {
   ++BadFuncCallForScop;
 }
 
@@ -140,7 +149,9 @@ std::string ReportFuncCall::getMessage() const {
   return "Call instruction: " + *Inst;
 }
 
-ReportAlias::ReportAlias(AliasSet *AS) : AS(AS) { ++BadAliasForScop; }
+ReportAlias::ReportAlias(AliasSet *AS) : RejectReason(rrkAlias), AS(AS) {
+  ++BadAliasForScop;
+}
 
 std::string ReportAlias::formatInvalidAlias(AliasSet &AS) const {
   std::string Message;
@@ -175,16 +186,20 @@ std::string ReportAlias::formatInvalidAlias(AliasSet &AS) const {
 
   return OS.str();
 }
-  
+
 std::string ReportAlias::getMessage() const { return formatInvalidAlias(*AS); }
 
-ReportSimpleLoop::ReportSimpleLoop() { ++BadSimpleLoopForScop; }
+ReportSimpleLoop::ReportSimpleLoop() : RejectReason(rrkSimpleLoop) {
+  ++BadSimpleLoopForScop;
+}
 
 std::string ReportSimpleLoop::getMessage() const {
   return "Loop not in simplify form is invalid!";
 }
 
-ReportOther::ReportOther() { ++BadOtherForScop; }
+ReportOther::ReportOther(const RejectReasonKind K) : RejectReason(K) {
+  ++BadOtherForScop;
+}
 
 std::string ReportIntToPtr::getMessage() const {
   return "Find bad intToptr prt: " + *BaseValue;

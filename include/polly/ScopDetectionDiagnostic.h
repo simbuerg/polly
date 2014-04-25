@@ -28,6 +28,7 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
+#include "llvm/Support/Casting.h"
 
 #include <string>
 #include <memory>
@@ -42,6 +43,37 @@ class Region;
 }
 
 namespace polly {
+
+// Discriminator for LLVM-style RTTI (dyn_cast<> et al.)
+enum RejectReasonKind {
+  // CFG Category
+  rrkCFG,
+  rrkNonBranchTerminator, rrkCondition,
+
+  // Non-Affinity
+  rrkAffFunc,
+  rrkUndefCond, rrkInvalidCond, rrkUndefOperand, rrkNonAffBranch,
+  rrkNoBasePtr, rrkUndefBasePtr, rrkVariantBasePtr, rrkNonAffineAccess,
+
+  // IndVar
+  rrkIndVar,
+  rrkPhiNodeRefInRegion, rrkNonCanonicalPhiNode, rrkLoopHeader,
+
+  rrkIndEdge,
+
+  rrkLoopBound,
+
+  rrkFuncCall,
+
+  rrkAlias,
+
+  rrkSimpleLoop,
+
+  // Other
+  rrkOther,
+  rrkIntToPtr, rrkAlloca, rrkUnknownInst, rrkPHIinExit, rrkEntry
+};
+
 //===----------------------------------------------------------------------===//
 /// @brief Base class of all reject reasons found during Scop detection.
 ///
@@ -51,6 +83,14 @@ namespace polly {
 class RejectReason {
   //===--------------------------------------------------------------------===//
 public:
+private:
+  const RejectReasonKind Kind;
+
+public:
+  RejectReasonKind getKind() const { return Kind; }
+
+  RejectReason(RejectReasonKind K) : Kind(K) {}
+
   virtual ~RejectReason() {};
 
   /// @brief Generate a reasonable diagnostic message describing this error.
@@ -87,15 +127,19 @@ public:
 class ReportCFG : public RejectReason {
   //===--------------------------------------------------------------------===//
 public:
-  ReportCFG();
+  ReportCFG(const RejectReasonKind K);
 };
 
 class ReportNonBranchTerminator : public ReportCFG {
   BasicBlock *BB;
 
 public:
-  ReportNonBranchTerminator(BasicBlock *BB) : BB(BB) {};
+  ReportNonBranchTerminator(BasicBlock *BB)
+      : ReportCFG(rrkNonBranchTerminator), BB(BB) {};
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkNonBranchTerminator;
+  }
   /// @name RejectReason interface
   //@{
   virtual std::string getMessage() const;
@@ -111,7 +155,11 @@ class ReportCondition : public ReportCFG {
   BasicBlock *BB;
 
 public:
-  ReportCondition(BasicBlock *BB) : BB(BB) {};
+  ReportCondition(BasicBlock *BB) : ReportCFG(rrkCondition), BB(BB) {};
+
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkCondition;
+  }
 
   /// @name RejectReason interface
   //@{
@@ -127,7 +175,7 @@ public:
 class ReportAffFunc : public RejectReason {
   //===--------------------------------------------------------------------===//
 public:
-  ReportAffFunc();
+  ReportAffFunc(const RejectReasonKind K);
 };
 
 //===----------------------------------------------------------------------===//
@@ -139,7 +187,11 @@ class ReportUndefCond : public ReportAffFunc {
   BasicBlock *BB;
 
 public:
-  ReportUndefCond(BasicBlock *BB) : BB(BB) {};
+  ReportUndefCond(BasicBlock *BB) : ReportAffFunc(rrkUndefCond), BB(BB) {};
+
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkAffFunc;
+  }
 
   /// @name RejectReason interface
   //@{
@@ -158,8 +210,12 @@ class ReportInvalidCond : public ReportAffFunc {
   BasicBlock *BB;
 
 public:
-  ReportInvalidCond(BasicBlock *BB) : BB(BB) {};
+  ReportInvalidCond(BasicBlock *BB) : ReportAffFunc(rrkInvalidCond), BB(BB) {};
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkInvalidCond;
+  }
+  
   /// @name RejectReason interface
   //@{
   virtual std::string getMessage() const;
@@ -175,8 +231,13 @@ class ReportUndefOperand : public ReportAffFunc {
   BasicBlock *BB;
 
 public:
-  ReportUndefOperand(BasicBlock *BB) : BB(BB) {};
+  ReportUndefOperand(BasicBlock *BB)
+      : ReportAffFunc(rrkUndefOperand), BB(BB) {};
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkUndefOperand;
+  }
+  
   /// @name RejectReason interface
   //@{
   virtual std::string getMessage() const;
@@ -199,7 +260,11 @@ class ReportNonAffBranch : public ReportAffFunc {
 
 public:
   ReportNonAffBranch(BasicBlock *BB, const SCEV *LHS, const SCEV *RHS)
-      : BB(BB), LHS(LHS), RHS(RHS) {};
+      : ReportAffFunc(rrkNonAffBranch), BB(BB), LHS(LHS), RHS(RHS) {};
+
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkNonAffBranch;
+  }
 
   const SCEV *lhs() { return LHS; }
   const SCEV *rhs() { return RHS; }
@@ -215,6 +280,12 @@ public:
 class ReportNoBasePtr : public ReportAffFunc {
   //===--------------------------------------------------------------------===//
 public:
+  ReportNoBasePtr() : ReportAffFunc(rrkNoBasePtr) {}
+
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkNoBasePtr;
+  }
+  
   /// @name RejectReason interface
   //@{
   virtual std::string getMessage() const;
@@ -226,6 +297,12 @@ public:
 class ReportUndefBasePtr : public ReportAffFunc {
   //===--------------------------------------------------------------------===//
 public:
+  ReportUndefBasePtr() : ReportAffFunc(rrkUndefBasePtr) {}
+
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkUndefBasePtr;
+  }
+  
   /// @name RejectReason interface
   //@{
   virtual std::string getMessage() const;
@@ -241,8 +318,13 @@ class ReportVariantBasePtr : public ReportAffFunc {
   Value *BaseValue;
 
 public:
-  ReportVariantBasePtr(Value *BaseValue) : BaseValue(BaseValue) {};
+  ReportVariantBasePtr(Value *BaseValue)
+      : ReportAffFunc(rrkVariantBasePtr), BaseValue(BaseValue) {};
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkVariantBasePtr;
+  }
+  
   /// @name RejectReason interface
   //@{
   virtual std::string getMessage() const;
@@ -259,8 +341,12 @@ class ReportNonAffineAccess : public ReportAffFunc {
 
 public:
   ReportNonAffineAccess(const SCEV *AccessFunction)
-      : AccessFunction(AccessFunction) {};
+      : ReportAffFunc(rrkNonAffineAccess), AccessFunction(AccessFunction) {};
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkNonAffineAccess;
+  }
+  
   const SCEV *get() { return AccessFunction; }
 
   /// @name RejectReason interface
@@ -277,7 +363,7 @@ public:
 class ReportIndVar : public RejectReason {
   //===--------------------------------------------------------------------===//
 public:
-  ReportIndVar();
+  ReportIndVar(const RejectReasonKind K);
 };
 
 //===----------------------------------------------------------------------===//
@@ -289,8 +375,13 @@ class ReportPhiNodeRefInRegion : public ReportIndVar {
   Instruction *Inst;
 
 public:
-  ReportPhiNodeRefInRegion(Instruction *Inst) : Inst(Inst) {};
+  ReportPhiNodeRefInRegion(Instruction *Inst)
+      : ReportIndVar(rrkPhiNodeRefInRegion), Inst(Inst) {};
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkPhiNodeRefInRegion;
+  }
+  
   /// @name RejectReason interface
   //@{
   virtual std::string getMessage() const;
@@ -306,8 +397,13 @@ class ReportNonCanonicalPhiNode : public ReportIndVar {
   Instruction *Inst;
 
 public:
-  ReportNonCanonicalPhiNode(Instruction *Inst) : Inst(Inst) {};
+  ReportNonCanonicalPhiNode(Instruction *Inst)
+      : ReportIndVar(rrkNonCanonicalPhiNode), Inst(Inst) {};
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkNonCanonicalPhiNode;
+  }
+  
   /// @name RejectReason interface
   //@{
   virtual std::string getMessage() const;
@@ -323,8 +419,12 @@ class ReportLoopHeader : public ReportIndVar {
   Loop *L;
 
 public:
-  ReportLoopHeader(Loop *L) : L(L) {};
+  ReportLoopHeader(Loop *L) : ReportIndVar(rrkLoopHeader), L(L) {};
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkLoopHeader;
+  }
+  
   /// @name RejectReason interface
   //@{
   virtual std::string getMessage() const;
@@ -338,6 +438,10 @@ class ReportIndEdge : public RejectReason {
 public:
   ReportIndEdge();
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkIndEdge;
+  }
+  
   /// @name RejectReason interface
   //@{
   virtual std::string getMessage() const;
@@ -358,6 +462,10 @@ class ReportLoopBound : public RejectReason {
 public:
   ReportLoopBound(Loop *L, const SCEV *LoopCount);
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkLoopBound;
+  }
+  
   const SCEV *loopCount() { return LoopCount; }
 
   /// @name RejectReason interface
@@ -377,6 +485,10 @@ class ReportFuncCall : public RejectReason {
 public:
   ReportFuncCall(Instruction *Inst);
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkFuncCall;
+  }
+  
   /// @name RejectReason interface
   //@{
   std::string getMessage() const;
@@ -399,6 +511,10 @@ class ReportAlias : public RejectReason {
 public:
   ReportAlias(AliasSet *AS);
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkAlias;
+  }
+  
   /// @name RejectReason interface
   //@{
   std::string getMessage() const;
@@ -412,6 +528,10 @@ class ReportSimpleLoop : public RejectReason {
 public:
   ReportSimpleLoop();
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkSimpleLoop;
+  }
+  
   /// @name RejectReason interface
   //@{
   std::string getMessage() const;
@@ -423,7 +543,7 @@ public:
 class ReportOther : public RejectReason {
   //===--------------------------------------------------------------------===//
 public:
-  ReportOther();
+  ReportOther(const RejectReasonKind K);
 
   /// @name RejectReason interface
   //@{
@@ -440,8 +560,13 @@ class ReportIntToPtr : public ReportOther {
   Value *BaseValue;
 
 public:
-  ReportIntToPtr(Value *BaseValue) : BaseValue(BaseValue) {};
+  ReportIntToPtr(Value *BaseValue)
+      : ReportOther(rrkIntToPtr), BaseValue(BaseValue) {};
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkIntToPtr;
+  }
+  
   /// @name RejectReason interface
   //@{
   std::string getMessage() const;
@@ -455,8 +580,12 @@ class ReportAlloca : public ReportOther {
   Instruction *Inst;
 
 public:
-  ReportAlloca(Instruction *Inst) : Inst(Inst) {};
+  ReportAlloca(Instruction *Inst) : ReportOther(rrkAlloca), Inst(Inst) {};
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkAlloca;
+  }
+  
   /// @name RejectReason interface
   //@{
   std::string getMessage() const;
@@ -470,8 +599,13 @@ class ReportUnknownInst : public ReportOther {
   Instruction *Inst;
 
 public:
-  ReportUnknownInst(Instruction *Inst) : Inst(Inst) {};
+  ReportUnknownInst(Instruction *Inst)
+      : ReportOther(rrkUnknownInst), Inst(Inst) {};
 
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkUnknownInst;
+  }
+  
   /// @name RejectReason interface
   //@{
   std::string getMessage() const;
@@ -483,6 +617,12 @@ public:
 class ReportPHIinExit : public ReportOther {
   //===--------------------------------------------------------------------===//
 public:
+  ReportPHIinExit() : ReportOther(rrkPHIinExit) {};
+
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkPHIinExit;
+  }
+  
   /// @name RejectReason interface
   //@{
   std::string getMessage() const;
@@ -494,6 +634,12 @@ public:
 class ReportEntry : public ReportOther {
   //===--------------------------------------------------------------------===//
 public:
+  ReportEntry() : ReportOther(rrkEntry) {};
+
+  static bool classof(const RejectReason *RR) {
+    return RR->getKind() == rrkEntry;
+  }
+  
   /// @name RejectReason interface
   //@{
   std::string getMessage() const;
