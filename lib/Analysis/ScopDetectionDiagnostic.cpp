@@ -26,6 +26,9 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 
+#include "llvm/Analysis/RegionInfo.h"
+#include "llvm/IR/DebugInfo.h"
+
 #define DEBUG_TYPE "polly-detect"
 #include "llvm/Support/Debug.h"
 
@@ -220,4 +223,28 @@ std::string ReportPHIinExit::getMessage() const {
 std::string ReportEntry::getMessage() const {
   return "Region containing entry block of function is invalid!";
 }
+
+void getDebugLocation(const Region *R, unsigned &LineBegin, unsigned &LineEnd,
+                      std::string &FileName) {
+  LineBegin = -1;
+  LineEnd = 0;
+
+  for (const BasicBlock *BB : R->blocks())
+    for (const Instruction &Inst : *BB) {
+      DebugLoc DL = Inst.getDebugLoc();
+      if (DL.isUnknown())
+        continue;
+
+      DIScope Scope(DL.getScope(Inst.getContext()));
+
+      if (FileName.empty())
+        FileName = Scope.getFilename();
+
+      unsigned NewLine = DL.getLine();
+
+      LineBegin = std::min(LineBegin, NewLine);
+      LineEnd = std::max(LineEnd, NewLine);
+    }
+}
+
 } // namespace polly
