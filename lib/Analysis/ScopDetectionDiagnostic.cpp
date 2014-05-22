@@ -160,7 +160,8 @@ std::string ReportFuncCall::getMessage() const {
   return "Call instruction: " + *Inst;
 }
 
-ReportAlias::ReportAlias(AliasSet *AS) : RejectReason(rrkAlias), AS(AS) {
+ReportAlias::ReportAlias()
+    : RejectReason(rrkAlias) {
   ++BadAliasForScop;
 }
 
@@ -198,7 +199,10 @@ std::string ReportAlias::formatInvalidAlias(AliasSet &AS) const {
   return OS.str();
 }
 
-std::string ReportAlias::getMessage() const { return formatInvalidAlias(*AS); }
+std::string ReportAlias::getMessage() const {
+  return "ReportAlias: not implemented.";
+//  return formatInvalidAlias(*AS);
+}
 
 ReportSimpleLoop::ReportSimpleLoop() : RejectReason(rrkSimpleLoop) {
   ++BadSimpleLoopForScop;

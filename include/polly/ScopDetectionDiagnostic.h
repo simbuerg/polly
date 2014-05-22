@@ -511,16 +511,13 @@ public:
 class ReportAlias : public RejectReason {
   //===--------------------------------------------------------------------===//
 
-  // The offending alias set.
-  AliasSet *AS;
-
   /// @brief Format an invalid alias set.
   ///
   /// @param AS The invalid alias set to format.
   std::string formatInvalidAlias(AliasSet &AS) const;
 
 public:
-  ReportAlias(AliasSet *AS);
+  ReportAlias();
 
   static bool classof(const RejectReason *RR) {
     return RR->getKind() == rrkAlias;
