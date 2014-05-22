@@ -124,6 +124,8 @@ public:
   iterator end() { return ErrorReports.end(); }
   size_t size() { return ErrorReports.size(); }
 
+  void print(raw_ostream &OS, int level = 0) const;
+
   const Region *region() const { return R; }
   void report(RejectReasonPtr Reject) { ErrorReports.push_back(Reject); }
 };

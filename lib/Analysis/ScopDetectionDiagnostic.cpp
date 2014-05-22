@@ -59,6 +59,14 @@ template <typename T> std::string operator+(Twine LHS, const T &RHS) {
 }
 
 //===----------------------------------------------------------------------===//
+// RejectLog.
+void RejectLog::print(raw_ostream &OS, int level) const {
+  int j = 0;
+  for (auto Reason : ErrorReports)
+    OS.indent(level) << "[" << j++ << "] " << Reason->getMessage() << "\n";
+}
+
+//===----------------------------------------------------------------------===//
 // ReportCFG.
 
 ReportCFG::ReportCFG(const RejectReasonKind K) : RejectReason(K) {
