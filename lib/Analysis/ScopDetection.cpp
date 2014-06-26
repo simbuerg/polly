@@ -622,17 +622,14 @@ Region *ScopDetection::expandRegion(Region &R) {
   while (ExpandedRegion) {
     DetectionContext Context(*ExpandedRegion, *AA, false /* verifying */);
     DEBUG(dbgs() << "\t\tTrying " << ExpandedRegion->getNameStr() << "\n");
-    // Only expand when we did not collect errors.
+    // Only expand, if we can fix all collected errors.
 
     // Check the exit first (cheap)
-    if (isValidExit(Context) && !Context.Log.hasErrors()) {
+    if (isValidExit(Context) && ExtensionChecker::isFixable(Context.Log)) {
       // If the exit is valid check all blocks
       //  - if true, a valid region was found => store it + keep expanding
       //  - if false, .tbd. => stop  (should this really end the loop?)
-      if (!allBlocksValid(Context) || Context.Log.hasErrors())
-        break;
-
-      if (Context.Log.hasErrors())
+      if (!allBlocksValid(Context) || !ExtensionChecker::isFixable(Context.Log))
         break;
 
       // Delete unnecessary regions (allocated by getExpandedRegion)
@@ -697,9 +694,15 @@ void ScopDetection::findScops(Region &R) {
     return;
 
   bool IsValidRegion = isValidRegion(R);
-  bool HasErrors = RejectLogs.count(&R) > 0;
+  bool HasErrors = RejectLogs.hasErrors(&R);
+  bool IsFixable = HasErrors;
 
-  if (IsValidRegion && !HasErrors) {
+  if (HasErrors) {
+    RejectLog Log = RejectLogs.at(&R);
+    IsFixable = ExtensionChecker::isFixable(Log);
+  }
+
+  if (IsValidRegion && (!HasErrors || IsFixable)) {
     ++ValidRegion;
     ValidRegions.insert(&R);
     return;
@@ -720,9 +723,16 @@ void ScopDetection::findScops(Region &R) {
     ToExpand.push_back(SubRegion.get());
 
   for (Region *CurrentRegion : ToExpand) {
-    // Skip regions that had errors.
-    bool HadErrors = RejectLogs.hasErrors(CurrentRegion);
-    if (HadErrors)
+    // Skip regions that have errors.
+    bool HasErrors = RejectLogs.hasErrors(CurrentRegion);
+    bool IsFixable = HasErrors;
+
+    if (HasErrors) {
+      RejectLog Log = RejectLogs.at(CurrentRegion);
+      IsFixable = ExtensionChecker::isFixable(Log);
+    }
+
+    if (HasErrors && !IsFixable)
       continue;
 
     // Skip invalid regions. Regions may become invalid, if they are element of
@@ -783,10 +793,10 @@ bool ScopDetection::isValidExit(DetectionContext &Context) const {
 }
 
 bool ScopDetection::isValidRegion(Region &R) const {
-  DetectionContext Context(R, *AA, false /*verifying*/);
+  DetectionContext Context(R, *AA, false /*verifying */);
 
   bool RegionIsValid = isValidRegion(Context);
-  bool HasErrors = !RegionIsValid || Context.Log.size() > 0;
+  bool HasErrors = Context.Log.hasErrors();
 
   if (PollyTrackFailures && HasErrors)
     RejectLogs.insert(std::make_pair(&R, Context.Log));

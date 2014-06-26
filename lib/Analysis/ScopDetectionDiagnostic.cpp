@@ -157,6 +157,46 @@ void RejectLog::print(raw_ostream &OS, int level) const {
 }
 
 //===----------------------------------------------------------------------===//
+// ScopDetectionExtension.
+
+bool ScopDetectionExtension::isFixable(ReportAlias &RR) { return false; }
+
+bool ScopDetectionExtension::isFixable(RejectReason &RR) {
+  switch (RR.getKind()) {
+  case rrkAlias:
+    return this->isFixable(static_cast<ReportAlias &>(RR));
+  default:
+    return false;
+  }
+}
+
+ScopDetectionExtension::ScopDetectionExtension() {
+  ExtensionChecker::get().add(this);
+}
+
+ScopDetectionExtension::~ScopDetectionExtension() {
+  ExtensionChecker::get().remove(this);
+}
+
+//===----------------------------------------------------------------------===//
+// ExtensionChecker.
+
+bool ExtensionChecker::check(const RejectLog &Log) {
+  bool AllIsFixable = true;
+
+  for (RejectReasonPtr RRPtr : Log) {
+    bool ErrorIsFixable = false;
+    for (ScopDetectionExtension *Ext : Extensions)
+      ErrorIsFixable |= Ext->isFixable(*RRPtr);
+    AllIsFixable &= ErrorIsFixable;
+  }
+
+  DEBUG(dbgs() << "Verdict: " << Log.region()->getNameStr()
+               << (AllIsFixable ? " is fixable" : " is not fixable") << "\n");
+  return AllIsFixable;
+}
+
+//===----------------------------------------------------------------------===//
 // ReportCFG.
 
 ReportCFG::ReportCFG(const RejectReasonKind K) : RejectReason(K) {
