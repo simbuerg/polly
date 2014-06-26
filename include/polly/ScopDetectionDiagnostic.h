@@ -25,6 +25,7 @@
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Value.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
@@ -97,13 +98,9 @@ enum RejectReasonKind {
   rrkLastIndVar,
 
   rrkIndEdge,
-
   rrkLoopBound,
-
   rrkFuncCall,
-
   rrkAlias,
-
   rrkSimpleLoop,
 
   // Other
@@ -829,6 +826,83 @@ public:
   //@}
 };
 
-} // namespace polly
+//===----------------------------------------------------------------------===//
+/// @brief Support the extension of the ScopDetection
+///
+/// Define an abstract interface for extending Polly's ScopDetection.
+/// This can be used to bypass errors that may occur during ScopDetection.
+///
+/// Subclasses of ScopDetectionExtension should override the isFixable
+/// methods for the error classes they want to ignore.
+class ScopDetectionExtension {
+protected:
+  /// @brief Checks if an aliasing error is fixable by the extension.
+  ///
+  /// @param RR the ReportAlias we want to fix.
+  /// @returns true, if we can fix the given RR.
+  virtual bool isFixable(ReportAlias &RR);
 
+  /// @brief Constructor. Registers the extension with the ExtensionChecker.
+  explicit ScopDetectionExtension();
+
+public:
+  /// @brief Checks if an arbitrary error is fixable by the extensions
+  ///
+  /// This dispatches to the corresponding implementation of the derived class.
+  ///
+  /// @param RR The RejectReason we want to fix.
+  /// @returns true, if we can fix the given RR.
+  bool isFixable(RejectReason &RR);
+
+  /// @brief Deregisters this extension from the ExtensionChecker again.
+  virtual ~ScopDetectionExtension();
+};
+
+//===----------------------------------------------------------------------===//
+/// @brief ExtensionChecker singleton.
+///
+/// ScopDetectionExtensions register with this singleton. This decouples the
+/// extensions from the ScopDetection instance that is run.
+class ExtensionChecker {
+public:
+  /// @brief Get the singleton instance.
+  /// @returns The ExtensionChecker instance.
+  static ExtensionChecker &get() {
+    static ExtensionChecker instance;
+    return instance;
+  }
+
+  /// @brief Register a new ScopDetectionExtension with the Checker.
+  ///
+  /// @param Ext The ScopDetectionExtension we want to add.
+  void add(ScopDetectionExtension *Ext) { Extensions.insert(Ext); }
+
+  /// @brief Dergisters a ScopDetectionExtension with the Checker.
+  ///
+  /// @param Ext The ScopDetectionExtension we want to remove.
+  void remove(ScopDetectionExtension *Ext) { Extensions.erase(Ext); }
+
+  /// @brief Check, if we can fix all the errors in the given log.
+  ///
+  /// @param Log The errors we want to fix.
+  /// @returns true, if we can fix all errors in the Log.
+  static bool isFixable(const RejectLog &Log) {
+    return ExtensionChecker::get().check(Log);
+  }
+
+protected:
+  /// @brief Check, if we can fix all the errors in the given log.
+  ///
+  /// @param Log The errors we want to fix.
+  /// @returns true, if we can fix all errors in the Log.
+  bool check(const RejectLog &Log);
+
+private:
+  SmallSet<ScopDetectionExtension *, 1> Extensions;
+
+  ExtensionChecker() {}                       // Invisible.
+  ExtensionChecker(ExtensionChecker const &); // Don't Implement
+  void operator=(ExtensionChecker const &);   // Don't implement
+};
+} // namespace polly
 #endif // POLLY_SCOP_DETECTION_DIAGNOSTIC_H
