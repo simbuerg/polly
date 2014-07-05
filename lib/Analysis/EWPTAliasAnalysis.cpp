@@ -1,4 +1,7 @@
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/Analysis/ScalarEvolutionExpressions.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Pass.h"
 #include "llvm/Analysis/RegionInfo.h"
 #include "llvm/IR/BasicBlock.h"
@@ -77,24 +80,62 @@ public:
     std::vector<EWPTTableEntry> tableEntries;
 };
 
+Value *getPointerOperand(Instruction &Inst) {
+  if (LoadInst *load = dyn_cast<LoadInst>(&Inst))
+    return load->getPointerOperand();
+  else if (StoreInst *store = dyn_cast<StoreInst>(&Inst))
+    return store->getPointerOperand();
+  else if (GetElementPtrInst *gep = dyn_cast<GetElementPtrInst>(&Inst))
+    return gep->getPointerOperand();
+
+  return 0;
+}
+
 class EWPTAliasAnalysis: public FunctionPass {
 public:
     static char ID;
 
     std::map<const llvm::Value*, ElementWisePointsToMapping*> ewpts;
 
+    /// @brief Analysis passes used.
+    //@{
+    ScalarEvolution *SE;
+    LoopInfo *LI;
+    //@}
+
     EWPTAliasAnalysis() : FunctionPass(ID) { }
 
     virtual bool runOnFunction(Function& F) {
-        for(const BasicBlock& Block : F) {
+        // Initialization.
+        SE = &getAnalysis<ScalarEvolution>();
+        LI = &getAnalysis<LoopInfo>();
+
+        // The actual analysis.
+        for(BasicBlock& Block : F) {
             runOnBlock(Block);
         }
 
         return true;
     }
 
-    void runOnBlock(const BasicBlock& block) {
-        for(const Instruction& CurrentInstruction : block.getInstList()) {
+    Value *getBasePointer(Instruction* MemoryAccess) {
+        Value *Ptr = getPointerOperand(*MemoryAccess);
+        Loop *L = LI->getLoopFor(MemoryAccess->getParent());
+        const SCEV *AccessFunction = SE->getSCEVAtScope(Ptr, L);
+        const SCEVUnknown *BasePointer;
+        Value *BaseValue;
+
+        BasePointer = dyn_cast<SCEVUnknown>(SE->getPointerBase(AccessFunction));
+
+        if (!BasePointer)
+          return NULL;
+
+        BaseValue = BasePointer->getValue();
+        return BaseValue;
+    }
+
+    void runOnBlock(BasicBlock& block) {
+        for(Instruction& CurrentInstruction : block.getInstList()) {
             if(llvm::isIdentifiedObject(&CurrentInstruction)) {
                 // If it's a malloc() call or similar.
                 ElementWisePointsToMapping *newMapping = new ElementWisePointsToMapping();
@@ -102,8 +143,25 @@ public:
                 newMapping->tableEntries.push_back(tableEntry);
                 ewpts[&CurrentInstruction] = newMapping;
                 llvm::outs() << "Found malloc instance: " << CurrentInstruction << "\n";
+            } else if (StoreInst* CurrentStoreInst = dyn_cast<StoreInst>(&CurrentInstruction)) {
+                // Check if we're storing to something that we also allocated.
+                const llvm::Value* storeTo = getBasePointer(CurrentStoreInst);
+
+                for(auto valuePair : ewpts) {
+                    const llvm::Value* compareTo = valuePair.first;
+                    llvm::outs() << "Comparing " << *storeTo << " to " << *compareTo << "\n";
+                    if(storeTo == compareTo) {
+                        llvm::outs() << "Found store to existing EWPT: " << CurrentInstruction << "\n";
+                    }
+                }
             }
         }
+    }
+
+    void getAnalysisUsage(AnalysisUsage &AU) const {
+        AU.addRequired<LoopInfo>();
+        AU.addRequired<ScalarEvolution>();
+        AU.setPreservesAll();
     }
 };
 
