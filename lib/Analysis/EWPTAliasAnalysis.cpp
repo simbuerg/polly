@@ -145,13 +145,22 @@ public:
                 llvm::outs() << "Found malloc instance: " << CurrentInstruction << "\n";
             } else if (StoreInst* CurrentStoreInst = dyn_cast<StoreInst>(&CurrentInstruction)) {
                 // Check if we're storing to something that we also allocated.
-                const llvm::Value* storeTo = getBasePointer(CurrentStoreInst);
+                llvm::Value* storeTo = getBasePointer(CurrentStoreInst);
 
-                for(auto valuePair : ewpts) {
-                    const llvm::Value* compareTo = valuePair.first;
-                    llvm::outs() << "Comparing " << *storeTo << " to " << *compareTo << "\n";
-                    if(storeTo == compareTo) {
-                        llvm::outs() << "Found store to existing EWPT: " << CurrentInstruction << "\n";
+                while(1) {
+                    for(auto valuePair : ewpts) {
+                        const llvm::Value* compareTo = valuePair.first;
+                        llvm::outs() << "Comparing " << *storeTo << " to " << *compareTo << "\n";
+                        if(storeTo == compareTo) {
+                            llvm::outs() << "Found store to existing EWPT: " << CurrentInstruction << "\n";
+                        }
+                    }
+
+
+                    if (LoadInst *Ld = dyn_cast<LoadInst>(storeTo)) {
+                        storeTo = getBasePointer(Ld);
+                    } else {
+                        break;
                     }
                 }
             }
