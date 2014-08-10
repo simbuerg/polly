@@ -66,7 +66,11 @@ public:
     }
 
     EWPTTableEntry(const llvm::Value* Statement, int nestingLevel, int rank)
-        : Statement(Statement), nestingLevel(nestingLevel), rank(rank) { }
+        : Statement(Statement), nestingLevel(nestingLevel), rank(rank) {
+        
+        assert(llvm::isNoAliasCall(Statement) && 
+            "Trying to create EWPT table entry with a value that is not an alias call!");    
+    }
 
     void addConstraint(int variableIndex, EWPTIndexConstraint indexConstraint) {
         indexConstraints.push_back(indexConstraint);
@@ -77,7 +81,18 @@ public:
 
 class ElementWisePointsToMapping {
 public:
+    /**
+     * Assumption: We are strongly typed, so e.g. int** a, the depth
+     * of the ewpt mapping for a would be 2, as 2 pointers have to be followed
+     * to get to the "outer part"(value)
+     */
+    int depth;
     std::vector<EWPTTableEntry> tableEntries;
+
+    static const int DEPTH_UNINITIALIZED = -1;
+
+    ElementWisePointsToMapping() : depth(DEPTH_UNINITIALIZED) {
+    }
 };
 
 Value *getPointerOperand(Instruction &Inst) {
@@ -134,9 +149,18 @@ public:
         return BaseValue;
     }
 
-    void runOnBlock(BasicBlock& block) {
+    void runOnBlock2(BasicBlock& block) {
+        Loop *loop = LI->getLoopFor(&block);
+        llvm::outs() << "BB: " << &block << " loop: ";
+        if(loop) {
+            llvm::outs() << *loop << "Induction variable " << loop->getCanonicalInductionVariable()->getName();
+        } else {
+            llvm::outs() << "none";
+        }
+        llvm::outs() << "\n";
+
         for(Instruction& CurrentInstruction : block.getInstList()) {
-            if(llvm::isIdentifiedObject(&CurrentInstruction)) {
+            if(llvm::isNoAliasCall(&CurrentInstruction)) {
                 // If it's a malloc() call or similar.
                 ElementWisePointsToMapping *newMapping = new ElementWisePointsToMapping();
                 EWPTTableEntry tableEntry(&CurrentInstruction, 0, 0);
@@ -147,11 +171,23 @@ public:
                 // Check if we're storing to something that we also allocated.
                 llvm::Value* storeTo = getBasePointer(CurrentStoreInst);
 
+                int depth = 0;
                 while(1) {
                     for(auto valuePair : ewpts) {
                         const llvm::Value* compareTo = valuePair.first;
                         llvm::outs() << "Comparing " << *storeTo << " to " << *compareTo << "\n";
                         if(storeTo == compareTo) {
+                            // If it's the "outer part", set the depth of the EWPT
+                            if(!llvm::isIdentifiedObject(CurrentStoreInst->getValueOperand())) {
+                                llvm::outs() << "Found store to outer part " << *CurrentStoreInst << "\n";
+                                ElementWisePointsToMapping *match = valuePair.second;
+                                if(match->depth != ElementWisePointsToMapping::DEPTH_UNINITIALIZED &&
+                                    match->depth != depth) {
+                                        llvm::errs() << "Found something we couldn't handle, sorry. (Trying to assign depth " << depth << " but depth is already " << match->depth << ")\n";
+                                } else {
+                                    match->depth = depth;
+                                }
+                            }
                             llvm::outs() << "Found store to existing EWPT: " << CurrentInstruction << "\n";
                         }
                     }
@@ -159,6 +195,7 @@ public:
 
                     if (LoadInst *Ld = dyn_cast<LoadInst>(storeTo)) {
                         storeTo = getBasePointer(Ld);
+                        depth++;
                     } else {
                         break;
                     }
@@ -167,12 +204,77 @@ public:
         }
     }
 
+    void runOnBlock(BasicBlock& block) {
+        for(Instruction& CurrentInstruction : block.getInstList()) {
+            if (StoreInst* CurrentStoreInst = dyn_cast<StoreInst>(&CurrentInstruction)) {
+                // Recursively via GEPs find out what we're storing to,
+                // e.g. in foo[x][y] = z we want foo, not &foo[x][y]
+                //
+                // Once we found the base, check if it's an EWPT.
+                // If it's not, create a new EWPT associated with the base.
+                //
+                // "depth" is the number of GEPs/loads we had to go through to find the base.
+                // Also figure out the indices of the GEPs/loads used.
+                //
+                // Check if the value of the store is a malloc or a different value.
+                // If it's a different value, but the number of GEPs/loads does not match
+                // the depth of the EWPT, error.
+                //
+                // Create a new EWPT table entry, at the found depth, with constraints for
+                // the found indices.
+                std::vector<Value*> Indices;
+                findBaseEWPT(*CurrentStoreInst->getPointerOperand(), Indices);
+
+                // Debug: print the indices.
+                llvm::outs() << "Finding EWPT for store " << *CurrentStoreInst << " [";
+                for(Value* value : Indices) {
+                    llvm::outs() << *value << ", ";
+                }
+                llvm::outs() << "]";
+            }
+        }
+    }
+
+    /**
+     * Try to follow a GEP/load chain to find the base EWPT.
+     *
+     * Anything that isn't itself retrieved from a load can be
+     * considered an EWPT.
+     *
+     * @param myPointer The pointer for which to get the base EWPT.
+     * @param indices A reference to a vector in which we'll store the indices used.
+     */
+    Value* findBaseEWPT(Value& myPointer, std::vector<Value*>& Indices) {
+        if (GetElementPtrInst* CurrentGEPInst = dyn_cast<GetElementPtrInst>(&myPointer)) {
+            // Remember the index of the GEP
+            for(User::op_iterator IndexIterator = CurrentGEPInst->idx_begin(); IndexIterator != CurrentGEPInst->idx_end(); IndexIterator++) {
+                Value* Index = IndexIterator->get();
+                Indices.push_back(Index);
+            }
+
+            // Check what we're GEP'ing into
+            if(LoadInst* CurrentLoadInst = dyn_cast<LoadInst>(CurrentGEPInst->getPointerOperand()->stripPointerCasts())) {
+                // Okay, it's a load, recursively try to find the root EWPT.
+                return findBaseEWPT(*CurrentLoadInst->getPointerOperand()->stripPointerCasts(), Indices);
+            } else {
+                // Nope, not a load, treat this as root EWPT.
+                return CurrentGEPInst->getPointerOperand()->stripPointerCasts();
+            }
+        }
+
+        // Not a GEP, we can't follow this pointer!
+        return NULL;
+    }
+
     void getAnalysisUsage(AnalysisUsage &AU) const {
         AU.addRequired<LoopInfo>();
         AU.addRequired<ScalarEvolution>();
         AU.setPreservesAll();
     }
 };
+
+
+
 
 char EWPTAliasAnalysis::ID = 0;
 
