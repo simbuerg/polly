@@ -461,7 +461,7 @@ private:
 };
 
 struct NonAffSCEVValidator
-    : public SCEVVisitor<SCEVValidator, class ValidatorResult> {
+    : public SCEVVisitor<NonAffSCEVValidator, class ValidatorResult> {
 private:
   const Region *R;
   ScalarEvolution &SE;
@@ -482,6 +482,10 @@ public:
 
   class ValidatorResult visitSignExtendExpr(const SCEVSignExtendExpr *Expr) {
     return visit(Expr->getOperand());
+  }
+
+  class ValidatorResult visitAddExpr(const SCEVAddExpr *Expr) {
+    return ((SCEVValidator *)this)->visitAddExpr(Expr);
   }
 
   class ValidatorResult visitAddRecExpr(const SCEVAddRecExpr *Expr) {
