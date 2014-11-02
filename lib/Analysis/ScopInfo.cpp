@@ -1866,7 +1866,7 @@ ScopInfo::ScopInfo() : RegionPass(ID), scop(0) {
 
 ScopInfo::~ScopInfo() {
   clear();
-  isl_ctx_free(ctx);
+  //isl_ctx_free(ctx);
 }
 
 void ScopInfo::getAnalysisUsage(AnalysisUsage &AU) const {

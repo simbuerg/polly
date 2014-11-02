@@ -26,7 +26,9 @@
 #include "polly/ScopPass.h"
 
 #include <map>
-#include "isl/ctx.h"
+#include <memory>
+
+#include "isl/UnionMap.hpp"
 
 struct isl_pw_aff;
 struct isl_union_map;
@@ -132,24 +134,25 @@ public:
 private:
   Scop *S;
 
+  typedef std::unique_ptr<isl::UnionMap> UnionMapPtrT;
   /// @brief The different kinds of dependences we calculate.
-  isl_union_map *RAW;
-  isl_union_map *WAR;
-  isl_union_map *WAW;
+  UnionMapPtrT Raw;
+  UnionMapPtrT Waw;
+  UnionMapPtrT War;
 
   /// @brief The map of reduction dependences
-  isl_union_map *RED = nullptr;
+  UnionMapPtrT Red;
 
   /// @brief The (reverse) transitive closure of reduction dependences
-  isl_union_map *TC_RED = nullptr;
+  UnionMapPtrT TcRed;
 
   /// @brief Map from memory accesses to their reduction dependences.
   DenseMap<MemoryAccess *, isl_map *> ReductionDependences;
 
   /// @brief Collect information about the SCoP.
-  void collectInfo(Scop &S, isl_union_map **Read, isl_union_map **Write,
-                   isl_union_map **MayWrite, isl_union_map **AccessSchedule,
-                   isl_union_map **StmtSchedule);
+  void collectInfo(Scop &S, isl::UnionMap &Read, isl::UnionMap &Write,
+                   isl::UnionMap &MayWrite, isl::UnionMap &AccessSchedule,
+                   isl::UnionMap &StmtSchedule);
 
   /// @brief Calculate and add at the privatization dependences
   void addPrivatizationDependences();
@@ -158,7 +161,7 @@ private:
   void calculateDependences(Scop &S);
 
   /// @brief Set the reduction dependences for @p MA to @p Deps.
-  void setReductionDependences(MemoryAccess *MA, __isl_take isl_map *Deps);
+  void setReductionDependences(MemoryAccess *MA, isl::Map &&Deps);
 };
 
 } // End polly namespace.
