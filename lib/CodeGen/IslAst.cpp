@@ -33,6 +33,7 @@
 #include "isl/set.h"
 #include "isl/map.h"
 #include "isl/aff.h"
+#include "isl/printer.h"
 
 #define DEBUG_TYPE "polly-ast"
 

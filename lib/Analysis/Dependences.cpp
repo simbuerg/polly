@@ -27,13 +27,16 @@
 #include "polly/Support/GICHelper.h"
 #include "llvm/Support/Debug.h"
 
-#include <isl/aff.h>
-#include <isl/ctx.h>
-#include <isl/flow.h>
-#include <isl/map.h>
-#include <isl/options.h>
-#include <isl/set.h>
+#include <isl/Context.h>
+#include <isl/PwAff.hpp>
+#include <isl/Space.hpp>
+#include <isl/Set.hpp>
+#include <isl/Map.hpp>
+#include <isl/UnionMap.hpp>
+#include <isl/UnionSet.hpp>
+#include <isl/Printer.hpp>
 
+using namespace isl;
 using namespace polly;
 using namespace llvm;
 
@@ -63,19 +66,18 @@ static cl::opt<enum AnalysisType> OptAnalysisType(
     cl::cat(PollyCategory));
 
 //===----------------------------------------------------------------------===//
-Dependences::Dependences() : ScopPass(ID) { RAW = WAR = WAW = nullptr; }
+Dependences::Dependences() : ScopPass(ID) {
+  Raw.reset(nullptr);
+  War.reset(nullptr);
+  Waw.reset(nullptr);
+  Red.reset(nullptr);
+  TcRed.reset(nullptr);
+}
 
-void Dependences::collectInfo(Scop &S, isl_union_map **Read,
-                              isl_union_map **Write, isl_union_map **MayWrite,
-                              isl_union_map **AccessSchedule,
-                              isl_union_map **StmtSchedule) {
-  isl_space *Space = S.getParamSpace();
-  *Read = isl_union_map_empty(isl_space_copy(Space));
-  *Write = isl_union_map_empty(isl_space_copy(Space));
-  *MayWrite = isl_union_map_empty(isl_space_copy(Space));
-  *AccessSchedule = isl_union_map_empty(isl_space_copy(Space));
-  *StmtSchedule = isl_union_map_empty(Space);
-
+void Dependences::collectInfo(Scop &S, isl::UnionMap &Read,
+                              isl::UnionMap &Write, isl::UnionMap &MayWrite,
+                              isl::UnionMap &AccessSchedule,
+                              isl::UnionMap &StmtSchedule) {
   SmallPtrSet<const Value *, 8> ReductionBaseValues;
   for (ScopStmt *Stmt : S)
     for (MemoryAccess *MA : *Stmt)
@@ -84,10 +86,10 @@ void Dependences::collectInfo(Scop &S, isl_union_map **Read,
 
   for (ScopStmt *Stmt : S) {
     for (MemoryAccess *MA : *Stmt) {
-      isl_set *domcp = Stmt->getDomain();
-      isl_map *accdom = MA->getAccessRelation();
+      isl::Set Domcp = isl::Set(Stmt->getDomain());
+      isl::Map AccDom = isl::Map(MA->getAccessRelation());
 
-      accdom = isl_map_intersect_domain(accdom, domcp);
+      AccDom = AccDom.intersectDomain(std::move(Domcp));
 
       if (ReductionBaseValues.count(MA->getBaseAddr())) {
         // Wrap the access domain and adjust the scattering accordingly.
@@ -102,35 +104,30 @@ void Dependences::collectInfo(Scop &S, isl_union_map **Read,
         // but as we transformed the access domain we need the scattering
         // to match the new access domains, thus we need
         //   [Stmt[i0, i1] -> MemAcc_A[i0 + i1]] -> [0, i0, 2, i1, 0]
-        accdom = isl_map_range_map(accdom);
+        AccDom = AccDom.rangeMap();
 
-        isl_map *stmt_scatter = Stmt->getScattering();
-        isl_set *scatter_dom = isl_map_domain(isl_map_copy(accdom));
-        isl_set *scatter_ran = isl_map_range(stmt_scatter);
-        isl_map *scatter =
-            isl_map_from_domain_and_range(scatter_dom, scatter_ran);
+        isl::Map StmtScatter = isl::Map(Stmt->getScattering());
+        isl::Set ScatterDom = AccDom.domain();
+        isl::Set ScatterRan = StmtScatter.range();
+        isl::Map Scatter = isl::Map::fromDomainAndRange(std::move(ScatterDom),
+                                                        std::move(ScatterRan));
+
         for (unsigned u = 0, e = Stmt->getNumIterators(); u != e; u++)
-          scatter =
-              isl_map_equate(scatter, isl_dim_out, 2 * u + 1, isl_dim_in, u);
-        *AccessSchedule = isl_union_map_add_map(*AccessSchedule, scatter);
+          Scatter = Scatter.equate(isl::DTOut, 2 * u + 1, isl::DTIn, u);
+        AccessSchedule = AccessSchedule.addMap(Scatter);
       }
 
       if (MA->isRead())
-        *Read = isl_union_map_add_map(*Read, accdom);
+        Read = Read.addMap(AccDom);
       else
-        *Write = isl_union_map_add_map(*Write, accdom);
+        Write = Write.addMap(AccDom);
     }
-    *StmtSchedule = isl_union_map_add_map(*StmtSchedule, Stmt->getScattering());
+    StmtSchedule = StmtSchedule.addMap(isl::Map(Stmt->getScattering()));
   }
-}
 
-/// @brief Fix all dimension of @p Zero to 0 and add it to @p user
-static int fixSetToZero(__isl_take isl_set *Zero, void *user) {
-  isl_union_set **User = (isl_union_set **)user;
-  for (unsigned i = 0; i < isl_set_dim(Zero, isl_dim_set); i++)
-    Zero = isl_set_fix_si(Zero, isl_dim_set, i, 0);
-  *User = isl_union_set_add_set(*User, Zero);
-  return 0;
+
+  isl::Set AssumedContext(S.getAssumedContext());
+  StmtSchedule = StmtSchedule.intersectParams(AssumedContext);
 }
 
 /// @brief Compute the privatization dependences for a given dependency @p Map
@@ -177,139 +174,104 @@ static int fixSetToZero(__isl_take isl_set *Zero, void *user) {
 /// Note: This function also computes the (reverse) transitive closure of the
 ///       reduction dependences.
 void Dependences::addPrivatizationDependences() {
-  isl_union_map *PrivRAW, *PrivWAW, *PrivWAR;
-
   // The transitive closure might be over approximated, thus could lead to
   // dependency cycles in the privatization dependences. To make sure this
   // will not happen we remove all negative dependences after we computed
   // the transitive closure.
-  TC_RED = isl_union_map_transitive_closure(isl_union_map_copy(RED), 0);
+  TcRed.reset(new isl::UnionMap(Red->transitiveClosure(0)));
 
   // FIXME: Apply the current schedule instead of assuming the identity schedule
   //        here. The current approach is only valid as long as we compute the
   //        dependences only with the initial (identity schedule). Any other
   //        schedule could change "the direction of the backward depenendes" we
   //        want to eliminate here.
-  isl_union_set *UDeltas = isl_union_map_deltas(isl_union_map_copy(TC_RED));
-  isl_union_set *Universe = isl_union_set_universe(isl_union_set_copy(UDeltas));
-  isl_union_set *Zero = isl_union_set_empty(isl_union_set_get_space(Universe));
-  isl_union_set_foreach_set(Universe, fixSetToZero, &Zero);
-  isl_union_map *NonPositive = isl_union_set_lex_le_union_set(UDeltas, Zero);
+  isl::UnionSet UDeltas = TcRed->deltas();
+  isl::UnionSet Universe = isl::UnionSet::universe(UDeltas);
+  isl::UnionSet Zero = isl::UnionSet::empty(Universe.getSpace());
 
-  TC_RED = isl_union_map_subtract(TC_RED, NonPositive);
+  /// @brief Fix all dimensions of @p Zero to 0 and add it to @p user
+  Universe.foreachSet([](isl_set *zero, void *user) -> int {
+                        isl::Set Zero_ = isl::Set(zero);
+                        isl::UnionSet &User = *(isl::UnionSet *)user;
+                        unsigned ndim = Zero_.dim(isl::DTSet);
+                        for (unsigned i = 0; i < ndim; i++)
+                          Zero_ = Zero_.fixSi(isl::DTSet, i, 0);
+                        User = User.addSet(Zero_);
+                        return 0;
+                      },
+                      &Zero);
+  isl::UnionMap NonPositive = UDeltas.lexLeUnionSet(Zero);
+  *TcRed = TcRed->subtract(NonPositive);
+  *TcRed = TcRed->union_(TcRed->reverse());
+  *TcRed = TcRed->coalesce();
 
-  TC_RED = isl_union_map_union(
-      TC_RED, isl_union_map_reverse(isl_union_map_copy(TC_RED)));
-  TC_RED = isl_union_map_coalesce(TC_RED);
-
-  isl_union_map **Maps[] = {&RAW, &WAW, &WAR};
-  isl_union_map **PrivMaps[] = {&PrivRAW, &PrivWAW, &PrivWAR};
-  for (unsigned u = 0; u < 3; u++) {
-    isl_union_map **Map = Maps[u], **PrivMap = PrivMaps[u];
-
-    *PrivMap = isl_union_map_apply_range(isl_union_map_copy(*Map),
-                                         isl_union_map_copy(TC_RED));
-    *PrivMap = isl_union_map_union(
-        *PrivMap, isl_union_map_apply_range(isl_union_map_copy(TC_RED),
-                                            isl_union_map_copy(*Map)));
-
-    *Map = isl_union_map_union(*Map, *PrivMap);
-  }
-
-  isl_union_set_free(Universe);
+  *Raw = Raw->union_(Raw->applyRange(*TcRed).union_(TcRed->applyRange(*Raw)));
+  *Waw = Waw->union_(Waw->applyRange(*TcRed).union_(TcRed->applyRange(*Waw)));
+  *War = War->union_(War->applyRange(*TcRed).union_(TcRed->applyRange(*War)));
 }
 
 void Dependences::calculateDependences(Scop &S) {
-  isl_union_map *Read, *Write, *MayWrite, *AccessSchedule, *StmtSchedule,
-      *Schedule;
+  const isl::Space Space = isl::Space(S.getParamSpace());
+
+  isl::UnionMap Read = isl::UnionMap::empty(Space);
+  isl::UnionMap Write = isl::UnionMap::empty(Space);
+  isl::UnionMap MayWrite = isl::UnionMap::empty(Space);
+  isl::UnionMap AccessSchedule = isl::UnionMap::empty(Space);
+  isl::UnionMap StmtSchedule = isl::UnionMap::empty(Space);
 
   DEBUG(dbgs() << "Scop: \n" << S << "\n");
 
-  collectInfo(S, &Read, &Write, &MayWrite, &AccessSchedule, &StmtSchedule);
+  collectInfo(S, Read, Write, MayWrite, AccessSchedule, StmtSchedule);
 
-  Schedule =
-      isl_union_map_union(AccessSchedule, isl_union_map_copy(StmtSchedule));
+  isl::UnionMap Schedule = AccessSchedule.union_(StmtSchedule);
 
-  Read = isl_union_map_coalesce(Read);
-  Write = isl_union_map_coalesce(Write);
-  MayWrite = isl_union_map_coalesce(MayWrite);
+  Read = Read.coalesce();
+  Write = Write.coalesce();
+  MayWrite = MayWrite.coalesce();
 
   long MaxOpsOld = isl_ctx_get_max_operations(S.getIslCtx());
   isl_ctx_set_max_operations(S.getIslCtx(), OptComputeOut);
   isl_options_set_on_error(S.getIslCtx(), ISL_ON_ERROR_CONTINUE);
 
-  DEBUG(dbgs() << "Read: " << Read << "\n";
-        dbgs() << "Write: " << Write << "\n";
-        dbgs() << "MayWrite: " << MayWrite << "\n";
-        dbgs() << "Schedule: " << Schedule << "\n");
-
-  // The pointers below will be set by the subsequent calls to
-  // isl_union_map_compute_flow.
-  RAW = WAW = WAR = RED = nullptr;
+  DEBUG(dbgs() << "Read: " << Read.toStr(isl::FIsl) << "\n";
+        dbgs() << "Write: " << Write.toStr(isl::FIsl) << "\n";
+        dbgs() << "MayWrite: " << MayWrite.toStr(isl::FIsl) << "\n";
+        dbgs() << "Schedule: " << Schedule.toStr(isl::FIsl) << "\n");
 
   if (OptAnalysisType == VALUE_BASED_ANALYSIS) {
-    isl_union_map_compute_flow(
-        isl_union_map_copy(Read), isl_union_map_copy(Write),
-        isl_union_map_copy(MayWrite), isl_union_map_copy(Schedule), &RAW,
-        nullptr, nullptr, nullptr);
-
-    isl_union_map_compute_flow(
-        isl_union_map_copy(Write), isl_union_map_copy(Write),
-        isl_union_map_copy(Read), isl_union_map_copy(Schedule), &WAW, &WAR,
-        nullptr, nullptr);
+    Read.computeFlow(Write, MayWrite, Schedule, &Raw, nullptr, nullptr,
+                     nullptr);
+    Write.computeFlow(Write, Read, Schedule, &Waw, &War, nullptr, nullptr);
   } else {
-    isl_union_map *Empty;
+    isl::UnionMap Empty = isl::UnionMap::empty(Write.getSpace());
+    Write = Write.union_(MayWrite);
 
-    Empty = isl_union_map_empty(isl_union_map_get_space(Write));
-    Write = isl_union_map_union(Write, isl_union_map_copy(MayWrite));
-
-    isl_union_map_compute_flow(
-        isl_union_map_copy(Read), isl_union_map_copy(Empty),
-        isl_union_map_copy(Write), isl_union_map_copy(Schedule), nullptr, &RAW,
-        nullptr, nullptr);
-
-    isl_union_map_compute_flow(
-        isl_union_map_copy(Write), isl_union_map_copy(Empty),
-        isl_union_map_copy(Read), isl_union_map_copy(Schedule), nullptr, &WAR,
-        nullptr, nullptr);
-
-    isl_union_map_compute_flow(
-        isl_union_map_copy(Write), isl_union_map_copy(Empty),
-        isl_union_map_copy(Write), isl_union_map_copy(Schedule), nullptr, &WAW,
-        nullptr, nullptr);
-    isl_union_map_free(Empty);
+    Read.computeFlow(Empty, Write, Schedule, nullptr, &Raw, nullptr, nullptr);
+    Write.computeFlow(Empty, Read, Schedule, nullptr, &War, nullptr, nullptr);
+    Write.computeFlow(Empty, Write, Schedule, nullptr, &Waw, nullptr, nullptr);
   }
 
-  isl_union_map_free(MayWrite);
-  isl_union_map_free(Write);
-  isl_union_map_free(Read);
-  isl_union_map_free(Schedule);
-
-  RAW = isl_union_map_coalesce(RAW);
-  WAW = isl_union_map_coalesce(WAW);
-  WAR = isl_union_map_coalesce(WAR);
+  map_inplace(&UnionMap::coalesce, { *Raw, *Waw, *War });
 
   if (isl_ctx_last_error(S.getIslCtx()) == isl_error_quota) {
-    isl_union_map_free(RAW);
-    isl_union_map_free(WAW);
-    isl_union_map_free(WAR);
-    RAW = WAW = WAR = nullptr;
+    Raw.reset(nullptr);
+    Waw.reset(nullptr);
+    War.reset(nullptr);
     isl_ctx_reset_error(S.getIslCtx());
   }
   isl_options_set_on_error(S.getIslCtx(), ISL_ON_ERROR_ABORT);
   isl_ctx_reset_operations(S.getIslCtx());
   isl_ctx_set_max_operations(S.getIslCtx(), MaxOpsOld);
 
-  isl_union_map *STMT_RAW, *STMT_WAW, *STMT_WAR;
-  STMT_RAW = isl_union_map_intersect_domain(
-      isl_union_map_copy(RAW),
-      isl_union_map_domain(isl_union_map_copy(StmtSchedule)));
-  STMT_WAW = isl_union_map_intersect_domain(
-      isl_union_map_copy(WAW),
-      isl_union_map_domain(isl_union_map_copy(StmtSchedule)));
-  STMT_WAR = isl_union_map_intersect_domain(isl_union_map_copy(WAR),
-                                            isl_union_map_domain(StmtSchedule));
-  DEBUG(dbgs() << "Wrapped Dependences:\n"; printScop(dbgs()); dbgs() << "\n");
+  isl::UnionMap StmtRaw = Raw->intersectDomain(StmtSchedule.domain());
+  isl::UnionMap StmtWaw = Waw->intersectDomain(StmtSchedule.domain());
+  isl::UnionMap StmtWar = War->intersectDomain(StmtSchedule.domain());
+
+  DEBUG({
+    dbgs() << "Wrapped Dependences:\n";
+    printScop(dbgs());
+    dbgs() << "\n";
+  });
 
   // To handle reduction dependences we proceed as follows:
   // 1) Aggregate all possible reduction dependences, namely all self
@@ -326,40 +288,47 @@ void Dependences::calculateDependences(Scop &S) {
   //    write and before the first access to a reduction location).
 
   // Step 1)
-  RED = isl_union_map_empty(isl_union_map_get_space(RAW));
+  Red.reset(new isl::UnionMap(isl::UnionMap::empty(Raw->getSpace())));
+  // FIXME(isl++) Below, an assertion is checked for equality, but
+  // we might run in the case where TcRed was never set:
+  //  Red->isEmpty() == true -> TcRed will be empty.
+  // I assume it was relying on the isl to return false here.
+  TcRed.reset(new isl::UnionMap(isl::UnionMap::empty(Raw->getSpace())));
+
   for (ScopStmt *Stmt : S) {
     for (MemoryAccess *MA : *Stmt) {
       if (!MA->isReductionLike())
         continue;
-      isl_set *AccDomW = isl_map_wrap(MA->getAccessRelation());
-      isl_map *Identity =
-          isl_map_from_domain_and_range(isl_set_copy(AccDomW), AccDomW);
-      RED = isl_union_map_add_map(RED, Identity);
+      isl::Set AccDomW = isl::Map(MA->getAccessRelation()).wrap();
+      isl::Map Identity = isl::Map::fromDomainAndRange(AccDomW, AccDomW);
+      *Red = Red->addMap(Identity);
     }
   }
 
   // Step 2)
-  RED = isl_union_map_intersect(RED, isl_union_map_copy(RAW));
-  RED = isl_union_map_intersect(RED, isl_union_map_copy(WAW));
+  *Red = Red->intersect(*Raw);
+  *Red = Red->intersect(*Waw);
 
-  if (!isl_union_map_is_empty(RED)) {
-
+  if (!Red->isEmpty()) {
     // Step 3)
-    RAW = isl_union_map_subtract(RAW, isl_union_map_copy(RED));
-    WAW = isl_union_map_subtract(WAW, isl_union_map_copy(RED));
+    *Raw = Raw->subtract(*Red);
+    *Waw = Waw->subtract(*Red);
 
     // Step 4)
     addPrivatizationDependences();
   }
 
-  DEBUG(dbgs() << "Final Wrapped Dependences:\n"; printScop(dbgs());
-        dbgs() << "\n");
+  DEBUG({
+    dbgs() << "Final Wrapped Dependences:\n";
+    printScop(dbgs());
+    dbgs() << "\n";
+  });
 
   // RED_SIN is used to collect all reduction dependences again after we
   // split them according to the causing memory accesses. The current assumption
   // is that our method of splitting will not have any leftovers. In the end
   // we validate this assumption until we have more confidence in this method.
-  isl_union_map *RED_SIN = isl_union_map_empty(isl_union_map_get_space(RAW));
+  isl::UnionMap RedSin = isl::UnionMap::empty(Raw->getSpace());
 
   // For each reduction like memory access, check if there are reduction
   // dependences with the access relation of the memory access as a domain
@@ -372,51 +341,49 @@ void Dependences::calculateDependences(Scop &S) {
       if (!MA->isReductionLike())
         continue;
 
-      isl_set *AccDomW = isl_map_wrap(MA->getAccessRelation());
-      isl_union_map *AccRedDepU = isl_union_map_intersect_domain(
-          isl_union_map_copy(TC_RED), isl_union_set_from_set(AccDomW));
-      if (isl_union_map_is_empty(AccRedDepU) && !isl_union_map_free(AccRedDepU))
+      isl::Set AccDomW = isl::Map(MA->getAccessRelation()).wrap();
+      isl::UnionMap AccRedDepU =
+          TcRed->intersectDomain(isl::UnionSet::fromSet(std::move(AccDomW)));
+      if (AccRedDepU.isEmpty())
         continue;
 
-      isl_map *AccRedDep = isl_map_from_union_map(AccRedDepU);
-      RED_SIN = isl_union_map_add_map(RED_SIN, isl_map_copy(AccRedDep));
-      AccRedDep = isl_map_zip(AccRedDep);
-      AccRedDep = isl_set_unwrap(isl_map_domain(AccRedDep));
-      setReductionDependences(MA, AccRedDep);
+      isl::Map AccRedDep = isl::Map::fromUnionMap(std::move(AccRedDepU));
+      RedSin = RedSin.addMap(AccRedDep);
+      AccRedDep = AccRedDep.zip();
+      AccRedDep = AccRedDep.domain().unwrap();
+      setReductionDependences(MA, std::move(AccRedDep));
     }
   }
 
-  assert(isl_union_map_is_equal(RED_SIN, TC_RED) &&
+  assert(RedSin.isEqual(*TcRed) &&
          "Intersecting the reduction dependence domain with the wrapped access "
          "relation is not enough, we need to loosen the access relation also");
-  isl_union_map_free(RED_SIN);
 
-  RAW = isl_union_map_zip(RAW);
-  WAW = isl_union_map_zip(WAW);
-  WAR = isl_union_map_zip(WAR);
-  RED = isl_union_map_zip(RED);
-  TC_RED = isl_union_map_zip(TC_RED);
+  map_inplace(&UnionMap::zip, {*Raw, *Waw, *War, *Red, *TcRed});
 
-  DEBUG(dbgs() << "Zipped Dependences:\n"; printScop(dbgs()); dbgs() << "\n");
+  DEBUG({
+    dbgs() << "Zipped Dependences:\n";
+    printScop(dbgs());
+    dbgs() << "\n";
+  });
 
-  RAW = isl_union_set_unwrap(isl_union_map_domain(RAW));
-  WAW = isl_union_set_unwrap(isl_union_map_domain(WAW));
-  WAR = isl_union_set_unwrap(isl_union_map_domain(WAR));
-  RED = isl_union_set_unwrap(isl_union_map_domain(RED));
-  TC_RED = isl_union_set_unwrap(isl_union_map_domain(TC_RED));
+  *Raw = Raw->domain().unwrap();
+  *Waw = Waw->domain().unwrap();
+  *War = War->domain().unwrap();
+  *Red = Red->domain().unwrap();
+  *TcRed = TcRed->domain().unwrap();
 
-  DEBUG(dbgs() << "Unwrapped Dependences:\n"; printScop(dbgs());
-        dbgs() << "\n");
+  DEBUG({
+    dbgs() << "Unwrapped Dependences:\n";
+    printScop(dbgs());
+    dbgs() << "\n";
+  });
 
-  RAW = isl_union_map_union(RAW, STMT_RAW);
-  WAW = isl_union_map_union(WAW, STMT_WAW);
-  WAR = isl_union_map_union(WAR, STMT_WAR);
+  *Raw = Raw->union_(StmtRaw);
+  *Waw = Waw->union_(StmtWaw);
+  *War = War->union_(StmtWar);
 
-  RAW = isl_union_map_coalesce(RAW);
-  WAW = isl_union_map_coalesce(WAW);
-  WAR = isl_union_map_coalesce(WAR);
-  RED = isl_union_map_coalesce(RED);
-  TC_RED = isl_union_map_coalesce(TC_RED);
+  map_inplace(&UnionMap::coalesce, { *Raw, *Waw, *War, *Red, *TcRed});
 
   DEBUG(printScop(dbgs()));
 }
@@ -434,43 +401,40 @@ bool Dependences::isValidScattering(StatementToIslMapTy *NewScattering) {
   if (LegalityCheckDisabled)
     return true;
 
-  isl_union_map *Dependences = getDependences(TYPE_RAW | TYPE_WAW | TYPE_WAR);
-  isl_space *Space = S.getParamSpace();
-  isl_union_map *Scattering = isl_union_map_empty(Space);
+  isl::UnionMap Dependences =
+      isl::UnionMap(getDependences(TYPE_RAW | TYPE_WAW | TYPE_WAR));
+  isl::Space Space = isl::Space(S.getParamSpace());
+  isl::UnionMap Scattering = isl::UnionMap::empty(Space);
 
-  isl_space *ScatteringSpace = 0;
+  std::unique_ptr<isl::Space> ScatteringSpace(nullptr);
 
   for (ScopStmt *Stmt : S) {
-    isl_map *StmtScat;
+    isl::Map StmtScat = isl::Map(nullptr);
 
     if (NewScattering->find(Stmt) == NewScattering->end())
-      StmtScat = Stmt->getScattering();
+      StmtScat = isl::Map(Stmt->getScattering());
     else
-      StmtScat = isl_map_copy((*NewScattering)[Stmt]);
+      StmtScat = isl::Map(isl_map_copy((*NewScattering)[Stmt]));
 
     if (!ScatteringSpace)
-      ScatteringSpace = isl_space_range(isl_map_get_space(StmtScat));
+      ScatteringSpace.reset(new isl::Space(StmtScat.getSpace().range()));
 
-    Scattering = isl_union_map_add_map(Scattering, StmtScat);
+    Scattering = Scattering.addMap(StmtScat);
   }
 
-  Dependences =
-      isl_union_map_apply_domain(Dependences, isl_union_map_copy(Scattering));
-  Dependences = isl_union_map_apply_range(Dependences, Scattering);
+  Dependences = Dependences.applyDomain(Scattering);
+  Dependences = Dependences.applyRange(Scattering);
 
-  isl_set *Zero = isl_set_universe(isl_space_copy(ScatteringSpace));
-  for (unsigned i = 0; i < isl_set_dim(Zero, isl_dim_set); i++)
-    Zero = isl_set_fix_si(Zero, isl_dim_set, i, 0);
+  isl::Set Zero = isl::Set::universe(*ScatteringSpace);
+  for (unsigned i = 0; i < Zero.dim(DTSet); i++)
+    Zero = Zero.fixSi(DTSet, i, 0);
 
-  isl_union_set *UDeltas = isl_union_map_deltas(Dependences);
-  isl_set *Deltas = isl_union_set_extract_set(UDeltas, ScatteringSpace);
-  isl_union_set_free(UDeltas);
+  isl::UnionSet UDeltas = Dependences.deltas();
+  isl::Set Deltas = UDeltas.extractSet(*ScatteringSpace);
 
-  isl_map *NonPositive = isl_set_lex_le_set(Deltas, Zero);
-  bool IsValid = isl_map_is_empty(NonPositive);
-  isl_map_free(NonPositive);
+  isl::Map NonPositive = Deltas.lexLeSet(Zero);
 
-  return IsValid;
+  return NonPositive.isEmpty();
 }
 
 // Check if the current scheduling dimension is parallel.
@@ -486,32 +450,45 @@ bool Dependences::isValidScattering(StatementToIslMapTy *NewScattering) {
 // dimension, then the loop is parallel. The distance is zero in the current
 // dimension if it is a subset of a map with equal values for the current
 // dimension.
-bool Dependences::isParallel(isl_union_map *Schedule, isl_union_map *Deps) {
-  isl_map *ScheduleDeps, *Test;
-  unsigned Dimension, IsParallel;
+bool Dependences::isParallel(isl_union_map *Schedule, isl_union_map *Deps,
+                             isl_pw_aff **MinDistancePtr) {
+  isl::Set Deltas = isl::Set(nullptr);
+  isl::Set Distance = isl::Set(nullptr);
+  isl::Map ScheduleDeps = isl::Map(nullptr);
 
-  Deps = isl_union_map_apply_range(Deps, isl_union_map_copy(Schedule));
-  Deps = isl_union_map_apply_domain(Deps, isl_union_map_copy(Schedule));
+  unsigned Dimension;
+  bool IsParallel;
 
-  if (isl_union_map_is_empty(Deps)) {
-    isl_union_map_free(Deps);
+  // FIXME(isl++)
+  // Usually this would be very easy, but atm I don't want to bleed
+  // out to all classes of Polly yet, so we have to do a little bit of extra
+  // work in here, namely: Give the ownership back to the output parameters.
+
+  // Pretend to take ownership. It has to be released before every return
+  // in this method.
+  isl::UnionMap Deps_ = isl::UnionMap(Deps);
+  isl::UnionMap Schedule_ = isl::UnionMap(Schedule);
+
+  Deps_ = Deps_.applyRange(Schedule_);
+  Deps_ = Deps_.applyDomain(Schedule_);
+
+  if (Deps_.isEmpty()) {
+    Deps = Deps_.Give();
+    Schedule = Schedule_.Give();
     return true;
   }
 
-  ScheduleDeps = isl_map_from_union_map(Deps);
-  Dimension = isl_map_dim(ScheduleDeps, isl_dim_out) - 1;
+  ScheduleDeps = isl::Map::fromUnionMap(Deps_);
+  Dimension = ScheduleDeps.dim(DTOut) - 1;
 
   for (unsigned i = 0; i < Dimension; i++)
-    ScheduleDeps = isl_map_equate(ScheduleDeps, isl_dim_out, i, isl_dim_in, i);
+    ScheduleDeps = ScheduleDeps.equate(DTOut, i, DTIn, i);
 
-  Test = isl_map_universe(isl_map_get_space(ScheduleDeps));
-  Test = isl_map_equate(Test, isl_dim_out, Dimension, isl_dim_in, Dimension);
-  IsParallel = isl_map_is_subset(ScheduleDeps, Test);
+  isl::Map Test = isl::Map::universe(ScheduleDeps.getSpace());
+  Test = Test.equate(DimType::DTOut, Dimension, DimType::DTIn, Dimension);
+  IsParallel = ScheduleDeps.isSubSet(Test);
 
-  isl_map_free(Test);
-  isl_map_free(ScheduleDeps);
-
-  return IsParallel;
+    return IsParallel;
 }
 
 static void printDependencyMap(raw_ostream &OS, __isl_keep isl_union_map *DM) {
@@ -523,25 +500,23 @@ static void printDependencyMap(raw_ostream &OS, __isl_keep isl_union_map *DM) {
 
 void Dependences::printScop(raw_ostream &OS) const {
   OS << "\tRAW dependences:\n\t\t";
-  printDependencyMap(OS, RAW);
+  printDependencyMap(OS, Raw->Get());
   OS << "\tWAR dependences:\n\t\t";
-  printDependencyMap(OS, WAR);
+  printDependencyMap(OS, War->Get());
   OS << "\tWAW dependences:\n\t\t";
-  printDependencyMap(OS, WAW);
+  printDependencyMap(OS, Waw->Get());
   OS << "\tReduction dependences:\n\t\t";
-  printDependencyMap(OS, RED);
+  printDependencyMap(OS, Red->Get());
   OS << "\tTransitive closure of reduction dependences:\n\t\t";
-  printDependencyMap(OS, TC_RED);
+  printDependencyMap(OS, TcRed->Get());
 }
 
 void Dependences::releaseMemory() {
-  isl_union_map_free(RAW);
-  isl_union_map_free(WAR);
-  isl_union_map_free(WAW);
-  isl_union_map_free(RED);
-  isl_union_map_free(TC_RED);
-
-  RED = RAW = WAR = WAW = TC_RED = nullptr;
+  Raw.reset(nullptr);
+  War.reset(nullptr);
+  Waw.reset(nullptr);
+  Red.reset(nullptr);
+  TcRed.reset(nullptr);
 
   for (auto &ReductionDeps : ReductionDependences)
     isl_map_free(ReductionDeps.second);
@@ -550,41 +525,41 @@ void Dependences::releaseMemory() {
 
 isl_union_map *Dependences::getDependences(int Kinds) {
   assert(hasValidDependences() && "No valid dependences available");
-  isl_space *Space = isl_union_map_get_space(RAW);
-  isl_union_map *Deps = isl_union_map_empty(Space);
+  isl::Space Space = Raw->getSpace();
+  isl::UnionMap Deps = isl::UnionMap::empty(Space);
 
   if (Kinds & TYPE_RAW)
-    Deps = isl_union_map_union(Deps, isl_union_map_copy(RAW));
+    Deps = Deps.union_(*Raw);
 
   if (Kinds & TYPE_WAR)
-    Deps = isl_union_map_union(Deps, isl_union_map_copy(WAR));
+    Deps = Deps.union_(*War);
 
   if (Kinds & TYPE_WAW)
-    Deps = isl_union_map_union(Deps, isl_union_map_copy(WAW));
+    Deps = Deps.union_(*Waw);
 
   if (Kinds & TYPE_RED)
-    Deps = isl_union_map_union(Deps, isl_union_map_copy(RED));
+    Deps = Deps.union_(*Red);
 
   if (Kinds & TYPE_TC_RED)
-    Deps = isl_union_map_union(Deps, isl_union_map_copy(TC_RED));
+    Deps = Deps.union_(*TcRed);
 
-  Deps = isl_union_map_coalesce(Deps);
-  Deps = isl_union_map_detect_equalities(Deps);
-  return Deps;
+  Deps = Deps.coalesce();
+  Deps = Deps.detectEqualities();
+  return Deps.Give();
 }
 
 bool Dependences::hasValidDependences() {
-  return (RAW != nullptr) && (WAR != nullptr) && (WAW != nullptr);
+  return (Raw != nullptr) && (War != nullptr) && (Waw != nullptr);
 }
 
 isl_map *Dependences::getReductionDependences(MemoryAccess *MA) {
   return isl_map_copy(ReductionDependences[MA]);
 }
 
-void Dependences::setReductionDependences(MemoryAccess *MA, isl_map *D) {
+void Dependences::setReductionDependences(MemoryAccess *MA, isl::Map &&D) {
   assert(ReductionDependences.count(MA) == 0 &&
          "Reduction dependences set twice!");
-  ReductionDependences[MA] = D;
+  ReductionDependences[MA] = D.GetCopy();
 }
 
 void Dependences::getAnalysisUsage(AnalysisUsage &AU) const {
