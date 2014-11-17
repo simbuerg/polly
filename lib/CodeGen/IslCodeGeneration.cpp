@@ -56,6 +56,11 @@ using namespace llvm;
 
 #define DEBUG_TYPE "polly-codegen-isl"
 
+STATISTIC(InnermostParallel,
+          "# of loops where the innermost dimension is parallel");
+STATISTIC(VectorizedLoops,
+          "# of vectorized loops");
+
 class IslNodeBuilder {
 public:
   IslNodeBuilder(PollyIRBuilder &Builder, LoopAnnotator &Annotator, Pass *P,
@@ -308,6 +313,7 @@ void IslNodeBuilder::createForVector(__isl_take isl_ast_node *For,
 
   isl_ast_node_free(For);
   isl_ast_expr_free(Iterator);
+  VectorizedLoops++;
 }
 
 void IslNodeBuilder::createForSequential(__isl_take isl_ast_node *For) {
@@ -377,6 +383,7 @@ void IslNodeBuilder::createFor(__isl_take isl_ast_node *For) {
   if (Vector && IslAstInfo::isInnermostParallel(For) &&
       !IslAstInfo::isReductionParallel(For)) {
     int VectorWidth = getNumberOfIterations(For);
+    InnermostParallel++;
     if (1 < VectorWidth && VectorWidth <= 16) {
       createForVector(For, VectorWidth);
       return;
