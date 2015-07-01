@@ -17,4 +17,10 @@
 #include "llvm/Support/CommandLine.h"
 
 extern llvm::cl::OptionCategory PollyCategory;
+
+namespace polly {
+namespace opt {
+  extern bool PollyParallel;
+}
+}
 #endif

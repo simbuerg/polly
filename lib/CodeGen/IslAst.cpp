@@ -50,10 +50,17 @@ using namespace polly;
 
 using IslAstUserPayload = IslAstInfo::IslAstUserPayload;
 
-static cl::opt<bool>
+namespace polly {
+namespace opt {
+bool PollyParallel;
+}
+}
+
+static cl::opt<bool, true>
     PollyParallel("polly-parallel",
                   cl::desc("Generate thread parallel code (isl codegen only)"),
-                  cl::init(false), cl::ZeroOrMore, cl::cat(PollyCategory));
+                  cl::ZeroOrMore, cl::cat(PollyCategory),
+                  cl::location(polly::opt::PollyParallel), cl::init(false));
 
 static cl::opt<bool> PollyParallelForce(
     "polly-parallel-force",
@@ -397,7 +404,7 @@ IslAst::IslAst(Scop *Scop)
       Ctx(Scop->getSharedIslCtx()) {}
 
 void IslAst::init(const Dependences &D) {
-  bool PerformParallelTest = PollyParallel || DetectParallel ||
+  bool PerformParallelTest = opt::PollyParallel || DetectParallel ||
                              PollyVectorizerChoice != VECTORIZER_NONE;
 
   // Skip AST and code generation if there was no benefit achieved.
@@ -519,7 +526,7 @@ bool IslAstInfo::isReductionParallel(__isl_keep isl_ast_node *Node) {
 
 bool IslAstInfo::isExecutedInParallel(__isl_keep isl_ast_node *Node) {
 
-  if (!PollyParallel)
+  if (!opt::PollyParallel)
     return false;
 
   // Do not parallelize innermost loops.
