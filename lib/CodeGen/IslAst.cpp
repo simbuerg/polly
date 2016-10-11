@@ -53,6 +53,9 @@ using IslAstUserPayload = IslAstInfo::IslAstUserPayload;
 namespace polly {
 namespace opt {
 bool PollyParallel;
+bool PollyParallelForce;
+bool UseContext;
+bool DetectParallel;
 }
 }
 
@@ -62,21 +65,23 @@ static cl::opt<bool, true>
                   cl::ZeroOrMore, cl::cat(PollyCategory),
                   cl::location(polly::opt::PollyParallel), cl::init(false));
 
-static cl::opt<bool> PollyParallelForce(
+static cl::opt<bool, true> PollyParallelForce(
     "polly-parallel-force",
     cl::desc(
         "Force generation of thread parallel code ignoring any cost model"),
-    cl::init(false), cl::ZeroOrMore, cl::cat(PollyCategory));
+    cl::ZeroOrMore, cl::cat(PollyCategory),
+    cl::location(polly::opt::PollyParallelForce), cl::init(false));
 
-static cl::opt<bool> UseContext("polly-ast-use-context",
+static cl::opt<bool, true> UseContext("polly-ast-use-context",
                                 cl::desc("Use context"), cl::Hidden,
-                                cl::init(false), cl::ZeroOrMore,
-                                cl::cat(PollyCategory));
+                                cl::ZeroOrMore, cl::cat(PollyCategory),
+                                cl::location(polly::opt::UseContext),
+                                cl::init(true));
 
-static cl::opt<bool> DetectParallel("polly-ast-detect-parallel",
-                                    cl::desc("Detect parallelism"), cl::Hidden,
-                                    cl::init(false), cl::ZeroOrMore,
-                                    cl::cat(PollyCategory));
+static cl::opt<bool, true>
+    DetectParallel("polly-ast-detect-parallel", cl::desc("Detect parallelism"),
+                   cl::Hidden, cl::ZeroOrMore, cl::cat(PollyCategory),
+                   cl::location(polly::opt::DetectParallel), cl::init(true));
 
 namespace polly {
 /// @brief Temporary information used when building the ast.
@@ -404,7 +409,7 @@ IslAst::IslAst(Scop *Scop)
       Ctx(Scop->getSharedIslCtx()) {}
 
 void IslAst::init(const Dependences &D) {
-  bool PerformParallelTest = opt::PollyParallel || DetectParallel ||
+  bool PerformParallelTest = opt::PollyParallel || opt::DetectParallel ||
                              PollyVectorizerChoice != VECTORIZER_NONE;
 
   // Skip AST and code generation if there was no benefit achieved.
@@ -417,7 +422,7 @@ void IslAst::init(const Dependences &D) {
   isl_ast_build *Build;
   AstBuildUserInfo BuildInfo;
 
-  if (UseContext)
+  if (opt::UseContext)
     Build = isl_ast_build_from_context(S->getContext());
   else
     Build = isl_ast_build_from_context(isl_set_universe(S->getParamSpace()));

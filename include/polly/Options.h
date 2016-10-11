@@ -20,7 +20,24 @@ extern llvm::cl::OptionCategory PollyCategory;
 
 namespace polly {
 namespace opt {
+  // IslAst.cpp
   extern bool PollyParallel;
+  extern bool PollyParallelForce;
+  extern bool UseContext;
+  extern bool DetectParallel;
+
+  // ScheduleOptimizer.cpp
+  extern std::string OptimizeDeps;
+  extern std::string SimplifyDeps;
+  extern int MaxConstantTerm;
+  extern int MaxCoefficient;
+  extern std::string FusionStrategy;
+  extern std::string MaximizeBandDepth;
+  extern std::string OuterCoincidence;
+  extern int PrevectorWidth;
+  extern bool FirstLevelTiling;
+  extern bool SecondLevelTiling;
+  extern bool RegisterTiling;
 }
 }
 #endif

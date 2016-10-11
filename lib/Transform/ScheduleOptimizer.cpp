@@ -72,53 +72,75 @@ using namespace polly;
 
 #define DEBUG_TYPE "polly-opt-isl"
 
-static cl::opt<std::string>
+namespace polly {
+namespace opt {
+std::string OptimizeDeps;
+std::string SimplifyDeps;
+int MaxConstantTerm;
+int MaxCoefficient;
+std::string FusionStrategy;
+std::string OuterCoincidence;
+int PrevectorWidth;
+bool FirstLevelTiling;
+bool SecondLevelTiling;
+bool RegisterTiling;
+}
+}
+
+static cl::opt<std::string, true>
     OptimizeDeps("polly-opt-optimize-only",
                  cl::desc("Only a certain kind of dependences (all/raw)"),
-                 cl::Hidden, cl::init("all"), cl::ZeroOrMore,
+                 cl::Hidden, cl::ZeroOrMore,
+                 cl::location(polly::opt::OptimizeDeps), cl::init("all"),
                  cl::cat(PollyCategory));
 
-static cl::opt<std::string>
+static cl::opt<std::string, true>
     SimplifyDeps("polly-opt-simplify-deps",
                  cl::desc("Dependences should be simplified (yes/no)"),
-                 cl::Hidden, cl::init("yes"), cl::ZeroOrMore,
+                 cl::Hidden, cl::ZeroOrMore,
+                 cl::location(polly::opt::SimplifyDeps), cl::init("yes"),
                  cl::cat(PollyCategory));
 
-static cl::opt<int> MaxConstantTerm(
+static cl::opt<int, true> MaxConstantTerm(
     "polly-opt-max-constant-term",
     cl::desc("The maximal constant term allowed (-1 is unlimited)"), cl::Hidden,
-    cl::init(20), cl::ZeroOrMore, cl::cat(PollyCategory));
+    cl::ZeroOrMore, cl::location(polly::opt::MaxConstantTerm), cl::init(20),
+    cl::cat(PollyCategory));
 
-static cl::opt<int> MaxCoefficient(
+static cl::opt<int, true> MaxCoefficient(
     "polly-opt-max-coefficient",
     cl::desc("The maximal coefficient allowed (-1 is unlimited)"), cl::Hidden,
-    cl::init(20), cl::ZeroOrMore, cl::cat(PollyCategory));
+    cl::ZeroOrMore, cl::location(polly::opt::MaxCoefficient), cl::init(20),
+    cl::cat(PollyCategory));
 
-static cl::opt<std::string> FusionStrategy(
+static cl::opt<std::string, true> FusionStrategy(
     "polly-opt-fusion", cl::desc("The fusion strategy to choose (min/max)"),
-    cl::Hidden, cl::init("min"), cl::ZeroOrMore, cl::cat(PollyCategory));
+    cl::Hidden, cl::ZeroOrMore, cl::location(polly::opt::FusionStrategy),
+    cl::init("min"), cl::cat(PollyCategory));
 
-static cl::opt<std::string>
-    MaximizeBandDepth("polly-opt-maximize-bands",
-                      cl::desc("Maximize the band depth (yes/no)"), cl::Hidden,
-                      cl::init("yes"), cl::ZeroOrMore, cl::cat(PollyCategory));
+static cl::opt<std::string> MaximizeBandDepth(
+    "polly-opt-maximize-bands", cl::desc("Maximize the band depth (yes/no)"),
+    cl::Hidden, cl::init("yes"), cl::ZeroOrMore,
+    cl::cat(PollyCategory));
 
-static cl::opt<std::string> OuterCoincidence(
+static cl::opt<std::string, true> OuterCoincidence(
     "polly-opt-outer-coincidence",
     cl::desc("Try to construct schedules where the outer member of each band "
              "satisfies the coincidence constraints (yes/no)"),
-    cl::Hidden, cl::init("no"), cl::ZeroOrMore, cl::cat(PollyCategory));
+    cl::Hidden, cl::ZeroOrMore, cl::location(polly::opt::OuterCoincidence),
+    cl::init("yes"), cl::cat(PollyCategory));
 
-static cl::opt<int> PrevectorWidth(
+static cl::opt<int, true> PrevectorWidth(
     "polly-prevect-width",
     cl::desc(
         "The number of loop iterations to strip-mine for pre-vectorization"),
-    cl::Hidden, cl::init(4), cl::ZeroOrMore, cl::cat(PollyCategory));
+    cl::Hidden, cl::ZeroOrMore, cl::location(polly::opt::PrevectorWidth),
+    cl::init(4), cl::cat(PollyCategory));
 
-static cl::opt<bool> FirstLevelTiling("polly-tiling",
-                                      cl::desc("Enable loop tiling"),
-                                      cl::init(true), cl::ZeroOrMore,
-                                      cl::cat(PollyCategory));
+static cl::opt<bool, true>
+    FirstLevelTiling("polly-tiling", cl::desc("Enable loop tiling"),
+                     cl::ZeroOrMore, cl::location(polly::opt::FirstLevelTiling),
+                     cl::init(true), cl::cat(PollyCategory));
 
 static cl::opt<int> LatencyVectorFma(
     "polly-target-latency-vector-fma",
@@ -156,10 +178,12 @@ static cl::list<int> FirstLevelTileSizes(
                                  "with --polly-default-tile-size"),
     cl::Hidden, cl::ZeroOrMore, cl::CommaSeparated, cl::cat(PollyCategory));
 
-static cl::opt<bool>
+static cl::opt<bool, true>
     SecondLevelTiling("polly-2nd-level-tiling",
                       cl::desc("Enable a 2nd level loop of loop tiling"),
-                      cl::init(false), cl::ZeroOrMore, cl::cat(PollyCategory));
+                      cl::ZeroOrMore,
+                      cl::location(polly::opt::SecondLevelTiling),
+                      cl::init(false), cl::cat(PollyCategory));
 
 static cl::opt<int> SecondLevelDefaultTileSize(
     "polly-2nd-level-default-tile-size",
@@ -174,10 +198,10 @@ static cl::list<int>
                          cl::Hidden, cl::ZeroOrMore, cl::CommaSeparated,
                          cl::cat(PollyCategory));
 
-static cl::opt<bool> RegisterTiling("polly-register-tiling",
-                                    cl::desc("Enable register tiling"),
-                                    cl::init(false), cl::ZeroOrMore,
-                                    cl::cat(PollyCategory));
+static cl::opt<bool, true>
+    RegisterTiling("polly-register-tiling", cl::desc("Enable register tiling"),
+                   cl::ZeroOrMore, cl::location(polly::opt::RegisterTiling),
+                   cl::init(false), cl::cat(PollyCategory));
 
 static cl::opt<int> RegisterDefaultTileSize(
     "polly-register-tiling-default-tile-size",
@@ -410,15 +434,15 @@ bool ScheduleTreeOptimizer::isTileableBandNode(
 __isl_give isl_schedule_node *
 ScheduleTreeOptimizer::standardBandOpts(__isl_take isl_schedule_node *Node,
                                         void *User) {
-  if (FirstLevelTiling)
+  if (opt::FirstLevelTiling)
     Node = tileNode(Node, "1st level tiling", FirstLevelTileSizes,
                     FirstLevelDefaultTileSize);
 
-  if (SecondLevelTiling)
+  if (opt::SecondLevelTiling)
     Node = tileNode(Node, "2nd level tiling", SecondLevelTileSizes,
                     SecondLevelDefaultTileSize);
 
-  if (RegisterTiling)
+  if (opt::RegisterTiling)
     Node =
         applyRegisterTiling(Node, RegisterTileSizes, RegisterDefaultTileSize);
 
@@ -431,7 +455,7 @@ ScheduleTreeOptimizer::standardBandOpts(__isl_take isl_schedule_node *Node,
 
   for (int i = Dims - 1; i >= 0; i--)
     if (isl_schedule_node_band_member_get_coincident(Node, i)) {
-      Node = prevectSchedBand(Node, i, PrevectorWidth);
+      Node = prevectSchedBand(Node, i, opt::PrevectorWidth);
       break;
     }
 
@@ -973,13 +997,13 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
       Dependences::TYPE_RAW | Dependences::TYPE_WAR | Dependences::TYPE_WAW;
   int ProximityKinds;
 
-  if (OptimizeDeps == "all")
+  if (opt::OptimizeDeps == "all")
     ProximityKinds =
         Dependences::TYPE_RAW | Dependences::TYPE_WAR | Dependences::TYPE_WAW;
-  else if (OptimizeDeps == "raw")
+  else if (opt::OptimizeDeps == "raw")
     ProximityKinds = Dependences::TYPE_RAW;
   else {
-    errs() << "Do not know how to optimize for '" << OptimizeDeps << "'"
+    errs() << "Do not know how to optimize for '" << opt::OptimizeDeps << "'"
            << " Falling back to optimizing all dependences.\n";
     ProximityKinds =
         Dependences::TYPE_RAW | Dependences::TYPE_WAR | Dependences::TYPE_WAW;
@@ -1000,13 +1024,13 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
   // transformations, but in most cases, such transformation do not seem to be
   // interesting anyway. In some cases this option may stop the scheduler to
   // find any schedule.
-  if (SimplifyDeps == "yes") {
+  if (opt::SimplifyDeps == "yes") {
     Validity = isl_union_map_gist_domain(Validity, isl_union_set_copy(Domain));
     Validity = isl_union_map_gist_range(Validity, isl_union_set_copy(Domain));
     Proximity =
         isl_union_map_gist_domain(Proximity, isl_union_set_copy(Domain));
     Proximity = isl_union_map_gist_range(Proximity, isl_union_set_copy(Domain));
-  } else if (SimplifyDeps != "no") {
+  } else if (opt::SimplifyDeps != "no") {
     errs() << "warning: Option -polly-opt-simplify-deps should either be 'yes' "
               "or 'no'. Falling back to default: 'yes'\n";
   }
@@ -1018,9 +1042,9 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
 
   unsigned IslSerializeSCCs;
 
-  if (FusionStrategy == "max") {
+  if (opt::FusionStrategy == "max") {
     IslSerializeSCCs = 0;
-  } else if (FusionStrategy == "min") {
+  } else if (opt::FusionStrategy == "min") {
     IslSerializeSCCs = 1;
   } else {
     errs() << "warning: Unknown fusion strategy. Falling back to maximal "
@@ -1042,9 +1066,9 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
 
   int IslOuterCoincidence;
 
-  if (OuterCoincidence == "yes") {
+  if (opt::OuterCoincidence == "yes") {
     IslOuterCoincidence = 1;
-  } else if (OuterCoincidence == "no") {
+  } else if (opt::OuterCoincidence == "no") {
     IslOuterCoincidence = 0;
   } else {
     errs() << "warning: Option -polly-opt-outer-coincidence should either be "
@@ -1057,8 +1081,8 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
   isl_options_set_schedule_outer_coincidence(Ctx, IslOuterCoincidence);
   isl_options_set_schedule_serialize_sccs(Ctx, IslSerializeSCCs);
   isl_options_set_schedule_maximize_band_depth(Ctx, IslMaximizeBands);
-  isl_options_set_schedule_max_constant_term(Ctx, MaxConstantTerm);
-  isl_options_set_schedule_max_coefficient(Ctx, MaxCoefficient);
+  isl_options_set_schedule_max_constant_term(Ctx, opt::MaxConstantTerm);
+  isl_options_set_schedule_max_coefficient(Ctx, opt::MaxCoefficient);
   isl_options_set_tile_scale_tile_loops(Ctx, 0);
 
   auto OnErrorStatus = isl_options_get_on_error(Ctx);
