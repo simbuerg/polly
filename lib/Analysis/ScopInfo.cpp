@@ -3597,7 +3597,7 @@ bool Scop::isProfitable() const {
       OptimizableStmtsOrLoops += Stmt.getNumIterators();
   }
 
-  return OptimizableStmtsOrLoops > 1;
+  return OptimizableStmtsOrLoops >= 1;
 }
 
 bool Scop::hasFeasibleRuntimeContext() const {
