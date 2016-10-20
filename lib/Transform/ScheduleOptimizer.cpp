@@ -74,6 +74,7 @@ using namespace polly;
 
 namespace polly {
 namespace opt {
+bool WholeComponent;
 std::string OptimizeDeps;
 std::string SimplifyDeps;
 int MaxConstantTerm;
@@ -112,6 +113,13 @@ static cl::opt<int, true> MaxCoefficient(
     cl::desc("The maximal coefficient allowed (-1 is unlimited)"), cl::Hidden,
     cl::ZeroOrMore, cl::location(polly::opt::MaxCoefficient), cl::init(20),
     cl::cat(PollyCategory));
+
+static cl::opt<bool, true>
+    XWholeComponent("polly-opt-whole-component",
+                    cl::desc("Control schedule_whole_component option"),
+                    cl::Hidden, cl::ZeroOrMore,
+                    cl::location(polly::opt::WholeComponent), cl::init(true),
+                    cl::cat(PollyCategory));
 
 static cl::opt<std::string, true> FusionStrategy(
     "polly-opt-fusion", cl::desc("The fusion strategy to choose (min/max)"),
@@ -1084,6 +1092,7 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
   isl_options_set_schedule_max_constant_term(Ctx, opt::MaxConstantTerm);
   isl_options_set_schedule_max_coefficient(Ctx, opt::MaxCoefficient);
   isl_options_set_tile_scale_tile_loops(Ctx, 0);
+  isl_options_set_schedule_whole_component(Ctx, opt::WholeComponent);
 
   auto OnErrorStatus = isl_options_get_on_error(Ctx);
   isl_options_set_on_error(Ctx, ISL_ON_ERROR_CONTINUE);

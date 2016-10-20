@@ -27,6 +27,7 @@ namespace opt {
   extern bool DetectParallel;
 
   // ScheduleOptimizer.cpp
+  extern bool WholeComponent;
   extern std::string OptimizeDeps;
   extern std::string SimplifyDeps;
   extern int MaxConstantTerm;
