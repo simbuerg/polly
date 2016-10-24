@@ -12,6 +12,7 @@
 #ifndef POLLY_SCHEDULE_OPTIMIZER_H
 #define POLLY_SCHEDULE_OPTIMIZER_H
 
+#include "polly/ScopPass.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "isl/ctx.h"
@@ -284,5 +285,30 @@ private:
   createMicroKernel(__isl_take isl_schedule_node *Node,
                     MicroKernelParamsTy MicroKernelParams);
 };
+
+namespace polly {
+  class IslScheduleOptimizer : public ScopPass {
+  public:
+    static char ID;
+    explicit IslScheduleOptimizer() : ScopPass(ID) { LastSchedule = nullptr; }
+
+    ~IslScheduleOptimizer();
+
+    /// @brief Optimize the schedule of the SCoP @p S.
+    bool runOnScop(Scop &S) override;
+
+    /// @brief Print the new schedule for the SCoP @p S.
+    void printScop(raw_ostream &OS, Scop &S) const override;
+
+    /// @brief Register all analyses and transformation required.
+    void getAnalysisUsage(AnalysisUsage &AU) const override;
+
+    /// @brief Release the internal memory.
+    void releaseMemory() override;
+
+  private:
+    isl_schedule *LastSchedule;
+  };
+}
 
 #endif

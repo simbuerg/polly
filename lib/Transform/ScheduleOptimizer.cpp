@@ -958,33 +958,15 @@ bool ScheduleTreeOptimizer::isProfitableSchedule(
   return changed;
 }
 
-namespace {
-class IslScheduleOptimizer : public ScopPass {
-public:
-  static char ID;
-  explicit IslScheduleOptimizer() : ScopPass(ID) { LastSchedule = nullptr; }
+namespace polly {
+IslScheduleOptimizer::~IslScheduleOptimizer() {
+  isl_schedule_free(LastSchedule);
+}
 
-  ~IslScheduleOptimizer() { isl_schedule_free(LastSchedule); }
-
-  /// @brief Optimize the schedule of the SCoP @p S.
-  bool runOnScop(Scop &S) override;
-
-  /// @brief Print the new schedule for the SCoP @p S.
-  void printScop(raw_ostream &OS, Scop &S) const override;
-
-  /// @brief Register all analyses and transformation required.
-  void getAnalysisUsage(AnalysisUsage &AU) const override;
-
-  /// @brief Release the internal memory.
-  void releaseMemory() override {
-    isl_schedule_free(LastSchedule);
-    LastSchedule = nullptr;
-  }
-
-private:
-  isl_schedule *LastSchedule;
-};
-} // namespace
+void IslScheduleOptimizer::releaseMemory() {
+  isl_schedule_free(LastSchedule);
+  LastSchedule = nullptr;
+}
 
 char IslScheduleOptimizer::ID = 0;
 
@@ -1173,6 +1155,7 @@ void IslScheduleOptimizer::getAnalysisUsage(AnalysisUsage &AU) const {
   ScopPass::getAnalysisUsage(AU);
   AU.addRequired<DependenceInfo>();
   AU.addRequired<TargetTransformInfoWrapperPass>();
+}
 }
 
 Pass *polly::createIslScheduleOptimizerPass() {
