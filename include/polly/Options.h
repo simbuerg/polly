@@ -39,6 +39,8 @@ namespace opt {
   extern bool FirstLevelTiling;
   extern bool SecondLevelTiling;
   extern bool RegisterTiling;
+  extern int FirstLevelDefaultTileSize;
+  extern int SecondLevelDefaultTileSize;
 
   // ScopDetection.cpp
   extern bool PollyInvariantLoadHoisting;
