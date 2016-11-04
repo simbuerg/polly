@@ -140,9 +140,11 @@ static cl::opt<bool>
                     cl::Hidden, cl::init(false), cl::ZeroOrMore,
                     cl::cat(PollyCategory));
 
-static cl::opt<bool> AllowNonAffineSubRegions(
+bool polly::PollyAllowNonAffineSubRegions;
+static cl::opt<bool,true> AllowNonAffineSubRegions(
     "polly-allow-nonaffine-branches",
-    cl::desc("Allow non affine conditions for branches"), cl::Hidden,
+    cl::desc("Allow non affine conditions for branches"),
+    cl::location(PollyAllowNonAffineSubRegions), cl::Hidden,
     cl::init(true), cl::ZeroOrMore, cl::cat(PollyCategory));
 
 static cl::opt<bool>

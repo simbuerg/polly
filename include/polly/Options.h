@@ -46,6 +46,7 @@ namespace opt {
 
   // ScopDetection.cpp
   extern bool PollyInvariantLoadHoisting;
+  extern bool AllowNonAffineSubRegions;
 }
 }
 #endif
